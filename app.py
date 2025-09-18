@@ -13,7 +13,7 @@ import json
 app = Flask(__name__)
 
 # AI API for intelligent responses
-AI_API_KEY = 'os.environ.get('CLAUDE_API_KEY')'
+AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
 def generate_contextual_resources(query):
     """Generate contextual resources based on the query content."""

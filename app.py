@@ -197,9 +197,9 @@ def get_zendesk_tickets(query):
     ]
 
 def get_confluence_pages(query):
-    """Search Confluence using multiple API approaches for maximum compatibility"""
+    """Search Confluence with intelligent query processing and better relevance"""
     print(f"DEBUG: CONFLUENCE_EMAIL={CONFLUENCE_EMAIL}, CONFLUENCE_TOKEN={'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
-    print(f"DEBUG: Searching Confluence for: {query}")
+    print(f"DEBUG: Confluence search for: {query}")
 
     if CONFLUENCE_EMAIL and CONFLUENCE_TOKEN:
         try:
@@ -215,135 +215,124 @@ def get_confluence_pages(query):
                 'Accept': 'application/json'
             }
 
-            pages = []
+            all_pages = []
 
-            # Method 1: Try the regular search endpoint first
-            try:
-                search_url = f"{confluence_url}/rest/api/search"
-                simple_cql = f'type=page and text~"{query}"'
+            # Create multiple search variations for better results
+            search_terms = [query]
 
-                params = {
-                    'cql': simple_cql,
-                    'limit': 10
+            # Add individual words if multi-word query
+            if ' ' in query:
+                search_terms.extend(query.split())
+
+            # Add some Blueshift-specific variations
+            query_lower = query.lower()
+            if 'campaign' in query_lower:
+                search_terms.extend(['email', 'journey', 'automation', 'message'])
+            if 'optimizer' in query_lower or 'optimization' in query_lower:
+                search_terms.extend(['test', 'experiment', 'variant', 'a/b'])
+            if 'api' in query_lower:
+                search_terms.extend(['integration', 'webhook', 'endpoint'])
+
+            print(f"DEBUG: Searching with terms: {search_terms[:5]}")  # Limit to 5 terms
+
+            # Try different search approaches
+            search_methods = [
+                # Method 1: Content search with simple CQL
+                {
+                    'url': f"{confluence_url}/rest/api/content/search",
+                    'params_func': lambda term: {'cql': f'type=page and (title~"{term}" or text~"{term}")', 'limit': 10, 'expand': 'space'}
+                },
+                # Method 2: Regular search API
+                {
+                    'url': f"{confluence_url}/rest/api/search",
+                    'params_func': lambda term: {'cql': f'type=page and text~"{term}"', 'limit': 10}
+                },
+                # Method 3: Very loose search
+                {
+                    'url': f"{confluence_url}/rest/api/content/search",
+                    'params_func': lambda term: {'cql': f'text~"{term}"', 'limit': 15}
                 }
+            ]
 
-                print(f"DEBUG: Trying regular search: {search_url}")
-                print(f"DEBUG: Simple CQL: {simple_cql}")
+            for method_idx, method in enumerate(search_methods):
+                print(f"DEBUG: Trying method {method_idx + 1}: {method['url']}")
 
-                response = requests.get(search_url, headers=headers, params=params, timeout=15)
-                print(f"DEBUG: Regular search status: {response.status_code}")
+                for term in search_terms[:3]:  # Limit terms per method
+                    try:
+                        params = method['params_func'](term)
+                        print(f"DEBUG: CQL for '{term}': {params.get('cql', 'N/A')}")
 
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get('results', [])
-                    print(f"DEBUG: Regular search found {len(results)} results")
-
-                    for result in results[:3]:
-                        page_data = {
-                            'title': result.get('title', result.get('name', 'Confluence Page')),
-                            'url': f"{confluence_url}{result.get('url', result.get('_links', {}).get('webui', ''))}"
-                        }
-                        pages.append(page_data)
-                        print(f"DEBUG: Added from regular search: {page_data['title']}")
-
-                elif response.status_code == 401:
-                    print("DEBUG: Confluence authentication failed")
-                else:
-                    print(f"DEBUG: Regular search failed: {response.text[:200]}")
-
-            except Exception as e:
-                print(f"DEBUG: Regular search error: {e}")
-
-            # Method 2: If regular search didn't work, try content/search endpoint
-            if len(pages) == 0:
-                try:
-                    content_search_url = f"{confluence_url}/rest/api/content/search"
-
-                    # Try very simple CQL first
-                    simple_queries = [
-                        f'type=page and text~"{query}"',
-                        f'type=page and title~"{query}"',
-                        f'text~"{query}"'
-                    ]
-
-                    for cql_query in simple_queries:
-                        params = {
-                            'cql': cql_query,
-                            'limit': 5
-                        }
-
-                        print(f"DEBUG: Trying content search: {cql_query}")
-                        response = requests.get(content_search_url, headers=headers, params=params, timeout=15)
-                        print(f"DEBUG: Content search status: {response.status_code}")
+                        response = requests.get(method['url'], headers=headers, params=params, timeout=15)
+                        print(f"DEBUG: Status {response.status_code} for term '{term}'")
 
                         if response.status_code == 200:
                             data = response.json()
                             results = data.get('results', [])
-                            print(f"DEBUG: Content search found {len(results)} results")
+                            print(f"DEBUG: Found {len(results)} results for '{term}'")
 
                             for result in results:
-                                if len(pages) >= 3:
-                                    break
+                                title = result.get('title', 'Confluence Page')
+
+                                # Build URL - handle different response formats
+                                url_path = result.get('url', result.get('_links', {}).get('webui', ''))
+                                if url_path.startswith('/'):
+                                    url = f"{confluence_url}{url_path}"
+                                elif url_path.startswith('http'):
+                                    url = url_path
+                                else:
+                                    url = f"{confluence_url}/wiki{url_path}"
 
                                 page_data = {
-                                    'title': result.get('title', 'Confluence Page'),
-                                    'url': f"{confluence_url}{result.get('_links', {}).get('webui', '')}"
+                                    'title': title,
+                                    'url': url,
+                                    'space': result.get('space', {}).get('name', ''),
+                                    'search_term': term  # Track which term found this
                                 }
 
-                                # Avoid duplicates
-                                if not any(p['url'] == page_data['url'] for p in pages):
-                                    pages.append(page_data)
-                                    print(f"DEBUG: Added from content search: {page_data['title']}")
+                                # Avoid duplicates by URL
+                                if not any(p.get('url') == page_data['url'] for p in all_pages):
+                                    all_pages.append(page_data)
+                                    print(f"DEBUG: Added '{title}' from space '{page_data['space']}'")
 
-                            if len(results) > 0:
-                                break  # Found some results, stop trying more queries
+                        elif response.status_code == 401:
+                            print("DEBUG: Confluence authentication failed")
+                            break
                         else:
-                            print(f"DEBUG: Content search failed: {response.text[:200]}")
+                            print(f"DEBUG: Search failed: {response.text[:100]}")
 
-                except Exception as e:
-                    print(f"DEBUG: Content search error: {e}")
+                    except Exception as e:
+                        print(f"DEBUG: Error searching with '{term}': {e}")
 
-            # Method 3: If still no results, try browsing recent content
-            if len(pages) == 0:
-                try:
-                    browse_url = f"{confluence_url}/rest/api/content"
-                    params = {
-                        'type': 'page',
-                        'limit': 10,
-                        'expand': 'space'
-                    }
+                # If we found results with this method, we can stop trying other methods
+                if len(all_pages) >= 5:
+                    break
 
-                    print(f"DEBUG: Browsing recent pages as fallback")
-                    response = requests.get(browse_url, headers=headers, params=params, timeout=15)
-                    print(f"DEBUG: Browse status: {response.status_code}")
+            print(f"DEBUG: Total pages found before filtering: {len(all_pages)}")
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        results = data.get('results', [])
-                        print(f"DEBUG: Found {len(results)} recent pages")
+            # Filter and rank results by relevance to original query
+            if all_pages:
+                scored_pages = []
+                for page in all_pages:
+                    score = score_confluence_relevance(page, query, search_terms)
+                    if score > 0:
+                        scored_pages.append((page, score))
 
-                        # Try to find pages that might be relevant to the query
-                        query_lower = query.lower()
-                        for result in results:
-                            title = result.get('title', '').lower()
-                            if any(word in title for word in query_lower.split()) or len(pages) < 3:
-                                page_data = {
-                                    'title': result.get('title', 'Recent Page'),
-                                    'url': f"{confluence_url}{result.get('_links', {}).get('webui', '')}"
-                                }
-                                pages.append(page_data)
-                                print(f"DEBUG: Added from browse: {page_data['title']}")
+                # Sort by score and return top results
+                scored_pages.sort(key=lambda x: x[1], reverse=True)
+                final_pages = []
 
-                                if len(pages) >= 3:
-                                    break
-                    else:
-                        print(f"DEBUG: Browse failed: {response.text[:200]}")
+                for page, score in scored_pages[:5]:  # Take top 5 scored pages
+                    # Clean up the page data
+                    final_pages.append({
+                        'title': page['title'],
+                        'url': page['url']
+                    })
 
-                except Exception as e:
-                    print(f"DEBUG: Browse error: {e}")
+                print(f"DEBUG: Returning {len(final_pages)} relevant Confluence pages")
+                return final_pages[:3]  # Return top 3
 
-            print(f"DEBUG: Returning {len(pages)} Confluence pages total")
-            return pages[:3]
+            print(f"DEBUG: No relevant Confluence pages found")
+            return []
 
         except Exception as e:
             print(f"DEBUG: Confluence search error: {e}")
@@ -355,6 +344,70 @@ def get_confluence_pages(query):
     return [
         {"title": f"Search Confluence for '{query}'", "url": f"{CONFLUENCE_URL}/dosearchsite.action?queryString={urllib.parse.quote(query)}"}
     ]
+
+def score_confluence_relevance(page, original_query, search_terms):
+    """Score Confluence page relevance with Confluence-specific logic"""
+    title = page.get('title', '').lower()
+    space = page.get('space', '').lower()
+    search_term = page.get('search_term', '').lower()
+    original_lower = original_query.lower()
+
+    score = 0
+
+    # High score for exact phrase match in title
+    if original_lower in title:
+        score += 20
+
+    # Score for original query words in title
+    for word in original_query.split():
+        if len(word) > 2 and word.lower() in title:
+            score += 8
+
+    # Score for search terms that found this page
+    if search_term in title:
+        score += 5
+
+    # Bonus for being in actual Blueshift Confluence spaces
+    blueshift_spaces = [
+        'support', 'campaign execution', 'product management',
+        'onboarding documentation', 'data engineering', 'dashboard',
+        'ai engineering', 'customer success'
+    ]
+    for space_name in blueshift_spaces:
+        if space_name in space:
+            score += 5  # Higher bonus for actual spaces
+            print(f"DEBUG: Bonus for space '{space_name}' in '{space}'")
+
+    # Extra bonus for highly relevant spaces based on query
+    query_space_relevance = {
+        'campaign': ['campaign execution', 'support'],
+        'optimizer': ['campaign execution', 'ai engineering', 'dashboard'],
+        'api': ['data engineering', 'onboarding documentation'],
+        'data': ['data engineering', 'dashboard'],
+        'customer': ['customer success', 'support'],
+        'dashboard': ['dashboard', 'data engineering'],
+        'integration': ['data engineering', 'onboarding documentation']
+    }
+
+    for query_term, relevant_space_names in query_space_relevance.items():
+        if query_term in original_lower:
+            for relevant_space in relevant_space_names:
+                if relevant_space in space:
+                    score += 8  # High bonus for query-relevant spaces
+                    print(f"DEBUG: High relevance bonus for '{query_term}' in space '{relevant_space}'")
+
+    # Penalty for very generic titles
+    generic_terms = ['home', 'index', 'main', 'dashboard', 'overview']
+    for generic in generic_terms:
+        if generic in title and len(title.split()) <= 2:
+            score -= 10
+
+    # Penalty for obvious template pages
+    if 'template' in title or 'example' in title:
+        score -= 5
+
+    print(f"DEBUG: Confluence page '{page.get('title', '')}' scored {score}")
+    return max(0, score)
 
 def search_help_docs(query):
     """Search Blueshift Help Center using Zendesk API"""

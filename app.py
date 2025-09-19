@@ -280,18 +280,18 @@ def search_help_docs(query):
 
         # Comprehensive mapping of queries to actual Blueshift help articles
         help_mappings = {
-            # Integration topics
+            # Integration topics - more specific
             'zendesk': [
-                {"title": "Zendesk Integration Guide", "url": "https://help.blueshift.com/hc/en-us/search?query=zendesk"},
-                {"title": "Third-Party Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"}
+                {"title": "Setting up Zendesk Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214-Setting-up-integrations"},
+                {"title": "Zendesk Data Import", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
             ],
             'facebook': [
                 {"title": "Facebook Custom Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754-Facebook-Custom-Audiences"},
-                {"title": "Facebook Pixel Setup", "url": "https://help.blueshift.com/hc/en-us/search?query=facebook"}
+                {"title": "Facebook Ads Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"}
             ],
             'integration': [
-                {"title": "Integration Overview", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"},
-                {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"}
+                {"title": "Third-Party Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214-Setting-up-integrations"},
+                {"title": "Data Integration Guide", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
             ],
 
             # Campaign topics
@@ -703,8 +703,9 @@ MAIN_TEMPLATE = '''
 
         .response-content {
             line-height: 1.6;
-            color: #222;
+            color: #000000;
             white-space: pre-line;
+            font-weight: 500;
         }
 
         /* INTERACTIVE FOLLOW-UP SECTION */

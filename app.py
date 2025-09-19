@@ -235,7 +235,6 @@ def index():
         input[type="text"]:focus { border-color: #2e7d3e; box-shadow: 0 0 0 3px rgba(46, 125, 62, 0.1); }
         button { padding: 18px 35px; background: linear-gradient(45deg, #2e7d3e, #3a9b4f); color: white; border: none; border-radius: 50px; font-size: 16px; cursor: pointer; margin-left: 15px; transition: all 0.3s ease; font-weight: 600; }
         button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(46, 125, 62, 0.3); }
-        button:disabled { background: #ccc; transform: none; box-shadow: none; cursor: not-allowed; }
         .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; margin-top: 40px; }
         .feature { background: linear-gradient(135deg, #f8f9fa, #e9ecef); padding: 25px; border-radius: 15px; border-left: 5px solid #2e7d3e; }
         .feature h3 { color: #2e7d3e; margin-top: 0; font-size: 1.3em; }
@@ -245,102 +244,12 @@ def index():
         .loading { display: none; text-align: center; margin: 20px; }
         .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #2e7d3e; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-        /* Results section styles */
-        .results-section { display: none; margin-top: 30px; }
-        .query-box { background: linear-gradient(135deg, #f8f9fa, #e9ecef); padding: 20px; border-radius: 15px; border-left: 6px solid #2e7d3e; margin-bottom: 25px; }
-        .query-box strong { color: #2e7d3e; font-size: 1.1em; }
-        .query-text { font-size: 1.0em; color: #444; margin-top: 8px; font-style: italic; }
-        .solution { background: linear-gradient(135deg, #e7f5e7, #f0f8f0); border: 3px solid #2e7d3e; border-radius: 20px; padding: 30px; margin: 25px 0; max-height: 600px; overflow-y: auto; }
-        .solution h2 { color: #2e7d3e; margin-top: 0; display: flex; align-items: center; font-size: 1.6em; }
-        .solution h2:before { content: "🧠"; margin-right: 15px; font-size: 1.2em; }
-        .solution-content { white-space: pre-wrap; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 14px; line-height: 1.7; color: #333; }
-        .solution-content h1, .solution-content h2, .solution-content h3 { color: #2e7d3e; margin-top: 20px; margin-bottom: 10px; }
-        .solution-content h4 { color: #2e7d3e; margin-top: 18px; }
-        .solution-content strong { color: #2e7d3e; }
-        .solution-content code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-family: 'Courier New', monospace; }
-        .solution-content pre { background: #f8f8f8; padding: 12px; border-radius: 8px; border-left: 4px solid #2e7d3e; overflow-x: auto; }
-        .resources-section { background: linear-gradient(135deg, #e8f5e8, #d4f4d4); padding: 20px; border-radius: 15px; margin: 20px 0; border: 2px solid #2e7d3e; }
-        .resources-section h3 { color: #2e7d3e; font-size: 1.2em; margin-bottom: 15px; text-align: center; }
-        .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; }
-        .resource-item { background: white; padding: 15px; border-radius: 10px; }
-        .resource-item strong { color: #2e7d3e; display: block; margin-bottom: 8px; }
-        .resource-item ul { list-style: none; padding: 0; margin: 0; }
-        .resource-item li { padding: 4px 0; }
-        .resource-item a { color: #0066cc; text-decoration: none; font-size: 0.9em; }
-        .resource-item a:hover { text-decoration: underline; color: #2e7d3e; }
-        .copy-btn { float: right; padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 15px; cursor: pointer; font-size: 11px; }
-        .copy-btn:hover { background: #0056b3; }
-        .new-search-btn { display: inline-block; padding: 12px 25px; background: linear-gradient(45deg, #2e7d3e, #3a9b4f); color: white; text-decoration: none; border-radius: 50px; margin-top: 20px; transition: all 0.3s ease; font-weight: 600; cursor: pointer; border: none; }
-        .new-search-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(46, 125, 62, 0.3); }
     </style>
     <script>
-        async function submitQuery(event) {
-            event.preventDefault();
-
-            const form = event.target;
-            const query = form.query.value.trim();
-            const button = form.querySelector('button');
-            const originalButtonText = button.innerHTML;
-
-            if (!query) return;
-
-            // Show loading state
+        function showThinking() {
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('results').style.display = 'none';
-            document.querySelector('.features').style.display = 'none';
-            button.disabled = true;
-            button.innerHTML = 'Analyzing...';
-
-            try {
-                const response = await fetch('/ai-analysis', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: 'query=' + encodeURIComponent(query)
-                });
-
-                const data = await response.json();
-
-                // Hide loading
-                document.getElementById('loading').style.display = 'none';
-
-                // Show results
-                document.getElementById('query-display').textContent = query;
-                document.getElementById('solution-content').innerHTML = data.solution;
-                document.getElementById('jira-list').innerHTML = data.resources.jiras.map(jira => `<li><a href="#">${jira}</a></li>`).join('');
-                document.getElementById('docs-list').innerHTML = data.resources.docs.map(doc => `<li><a href="#">${doc}</a></li>`).join('');
-                document.getElementById('tickets-list').innerHTML = data.resources.tickets.map(ticket => `<li><a href="#">${ticket}</a></li>`).join('');
-
-                document.getElementById('results').style.display = 'block';
-
-            } catch (error) {
-                console.error('Error:', error);
-                document.getElementById('loading').style.display = 'none';
-                document.querySelector('.features').style.display = 'grid';
-                alert('An error occurred while processing your request. Please try again.');
-            } finally {
-                button.disabled = false;
-                button.innerHTML = originalButtonText;
-            }
-        }
-
-        function copyToClipboard() {
-            const content = document.getElementById('solution-content').textContent;
-            navigator.clipboard.writeText(content).then(function() {
-                const btn = document.querySelector('.copy-btn');
-                btn.textContent = '✅ Copied!';
-                setTimeout(() => btn.textContent = '📋 Copy', 2000);
-            });
-        }
-
-        function newSearch() {
-            document.getElementById('results').style.display = 'none';
-            document.querySelector('.features').style.display = 'grid';
-            document.querySelector('input[name="query"]').value = '';
-            document.querySelector('input[name="query"]').focus();
+            document.querySelector('button').disabled = true;
+            document.querySelector('button').innerHTML = 'Analyzing...';
         }
     </script>
 </head>
@@ -352,7 +261,7 @@ def index():
         </h1>
 
         <div class="search-container">
-            <form onsubmit="submitQuery(event)">
+            <form method="post" action="/ai-analysis" onsubmit="showThinking()">
                 <input type="text" name="query" placeholder="Describe your specific support question or problem..." required autofocus>
                 <button type="submit">Get Support Analysis</button>
             </form>
@@ -364,40 +273,6 @@ def index():
             <div style="color: #666; margin-top: 10px;">Finding the best solution for your specific scenario</div>
         </div>
 
-        <div id="results" class="results-section">
-            <div class="query-box">
-                <strong>Your Question:</strong>
-                <div class="query-text" id="query-display"></div>
-            </div>
-
-            <div class="solution">
-                <h2>Analysis Results</h2>
-                <button class="copy-btn" onclick="copyToClipboard()">📋 Copy</button>
-                <div class="solution-content" id="solution-content"></div>
-            </div>
-
-            <div class="resources-section">
-                <h3>📋 Related Resources</h3>
-                <div class="resource-grid">
-                    <div class="resource-item">
-                        <strong>🎫 Related JIRAs</strong>
-                        <ul id="jira-list"></ul>
-                    </div>
-                    <div class="resource-item">
-                        <strong>📚 Help Documentation</strong>
-                        <ul id="docs-list"></ul>
-                    </div>
-                    <div class="resource-item">
-                        <strong>🏢 Confluence & Tickets</strong>
-                        <ul id="tickets-list"></ul>
-                    </div>
-                </div>
-            </div>
-
-            <div style="text-align: center;">
-                <button class="new-search-btn" onclick="newSearch()">← Ask Another Question</button>
-            </div>
-        </div>
 
         <div class="features">
             <div class="feature">
@@ -440,8 +315,6 @@ def ai_analysis():
         query = request.args.get('q', '').strip()
 
     if not query:
-        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-            return jsonify({'error': 'No query provided'}), 400
         return redirect('/')
 
     print(f"SUPPORT ANALYSIS REQUEST: {query}")
@@ -450,15 +323,6 @@ def ai_analysis():
     solution = generate_ai_solution(query)
     resources = generate_contextual_resources(query)
 
-    # Check if it's an AJAX request
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return jsonify({
-            'solution': solution,
-            'resources': resources,
-            'query': query
-        })
-
-    # Return HTML for direct access (backward compatibility)
     html = f'''<!DOCTYPE html>
 <html>
 <head>

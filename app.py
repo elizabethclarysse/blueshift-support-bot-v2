@@ -276,8 +276,49 @@ def search_help_docs(query):
     try:
         print(f"DEBUG: Help docs search for: {query}")
         import urllib.parse
+        import re
 
-        # Always return direct search links - no hardcoded mappings
+        # Search the actual help center
+        search_url = "https://help.blueshift.com/hc/en-us/search"
+        params = {'query': query}
+
+        response = requests.get(search_url, params=params, timeout=10)
+        print(f"DEBUG: Help center response status: {response.status_code}")
+
+        if response.status_code == 200:
+            content = response.text
+            articles = []
+
+            # Look for article links based on actual HTML structure
+            patterns = [
+                r'href="(https://help\.blueshift\.com/hc/en-us/articles/[^"]+)"[^>]*>([^<]+)</a>',
+                r'<a[^>]*href="(https://help\.blueshift\.com/hc/en-us/articles/[^"]+)"[^>]*>([^<]+)</a>',
+                r'href="(/hc/en-us/articles/[^"]+)"[^>]*>([^<]+)</a>'
+            ]
+
+            for pattern in patterns:
+                matches = re.findall(pattern, content)
+                print(f"DEBUG: Pattern found {len(matches)} matches")
+                for href, title in matches:
+                    clean_title = re.sub(r'<[^>]*>', '', title).strip()
+                    if clean_title and len(clean_title) > 5:
+                        # Handle both full URLs and relative URLs
+                        url = href if href.startswith('https://') else f"https://help.blueshift.com{href}"
+                        articles.append({
+                            'title': clean_title[:80],
+                            'url': url
+                        })
+                        if len(articles) >= 3:
+                            break
+                if len(articles) >= 3:
+                    break
+
+            if articles:
+                print(f"DEBUG: Found {len(articles)} help center articles")
+                return articles[:3]
+
+        # Fallback if search fails
+        print("DEBUG: Help center search failed, returning fallback")
         return [
             {"title": f"Search Help Center: '{query}'", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
             {"title": "Browse All Help Articles", "url": "https://help.blueshift.com/hc/en-us"},

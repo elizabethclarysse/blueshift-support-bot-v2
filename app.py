@@ -11,8 +11,15 @@ AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 # Optional API credentials for live data
 JIRA_EMAIL = os.environ.get('JIRA_EMAIL')
 JIRA_TOKEN = os.environ.get('JIRA_TOKEN')
+JIRA_URL = os.environ.get('JIRA_URL', 'https://blueshift.atlassian.net')
+
 ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
 ZENDESK_TOKEN = os.environ.get('ZENDESK_TOKEN')
+ZENDESK_SUBDOMAIN = os.environ.get('ZENDESK_SUBDOMAIN')
+
+CONFLUENCE_EMAIL = os.environ.get('CONFLUENCE_EMAIL')
+CONFLUENCE_TOKEN = os.environ.get('CONFLUENCE_TOKEN')
+CONFLUENCE_URL = os.environ.get('CONFLUENCE_URL', 'https://blueshift.atlassian.net/wiki')
 
 def call_anthropic_api(query, conversation_history=None):
     """Call Anthropic Claude API for high-quality responses"""
@@ -75,16 +82,15 @@ Be specific, actionable, and helpful."""
 
 def search_jira_tickets(query):
     """Search JIRA for relevant tickets using API"""
-    # API calls disabled for now - using fallback data
-    if False:  # Change to True when credentials are added
+    # Check if JIRA credentials are available
+    print(f"DEBUG: JIRA_EMAIL={JIRA_EMAIL}, JIRA_TOKEN={'SET' if JIRA_TOKEN else 'NOT SET'}")
+    if JIRA_EMAIL and JIRA_TOKEN:
         try:
             import base64
 
-            # JIRA API credentials
-            jira_url = "https://blueshift.atlassian.net"
-            # Use your JIRA API token here - replace with your actual credentials
-            # Get your API token from: https://id.atlassian.com/manage-profile/security/api-tokens
-            auth_token = base64.b64encode("your-email@blueshift.com:your-api-token".encode()).decode()
+            # JIRA API credentials from environment
+            jira_url = JIRA_URL
+            auth_token = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
 
             headers = {
                 'Authorization': f'Basic {auth_token}',
@@ -101,7 +107,9 @@ def search_jira_tickets(query):
                 'fields': 'key,summary,status'
             }
 
+            print(f"DEBUG: Making JIRA API call to {search_url}")
             response = requests.get(search_url, headers=headers, params=params, timeout=10)
+            print(f"DEBUG: JIRA API response status: {response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
@@ -111,10 +119,15 @@ def search_jira_tickets(query):
                         'title': f"{issue['key']}: {issue['fields']['summary']}",
                         'url': f"{jira_url}/browse/{issue['key']}"
                     })
+                print(f"DEBUG: JIRA returned {len(tickets)} real tickets")
                 return tickets
+            else:
+                print(f"DEBUG: JIRA API failed: {response.text}")
 
         except Exception as e:
             print(f"JIRA search error: {e}")
+
+    print("DEBUG: Using JIRA fallback data")
 
     # Intelligent fallback based on query content
     query_lower = query.lower()
@@ -147,15 +160,16 @@ def search_jira_tickets(query):
 
 def search_zendesk_tickets(query):
     """Search Zendesk for relevant tickets using API"""
-    # API calls disabled for now - using fallback data
-    if False:  # Change to True when credentials are added
+    # Check if Zendesk credentials are available
+    print(f"DEBUG: ZENDESK_SUBDOMAIN={ZENDESK_SUBDOMAIN}, ZENDESK_TOKEN={'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+    if ZENDESK_EMAIL and ZENDESK_TOKEN and ZENDESK_SUBDOMAIN:
         try:
-            # Zendesk API credentials
-            zendesk_url = "https://blueshiftsuccess.zendesk.com"
-            # Use your Zendesk API token here - replace with your actual credentials
-            # Get your API token from: Admin Center > Apps and integrations > APIs > Zendesk API > Settings
+            import base64
+            # Zendesk API credentials from environment
+            zendesk_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com"
+            auth_token = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
             headers = {
-                'Authorization': 'Basic your-base64-encoded-email:token',
+                'Authorization': f'Basic {auth_token}',
                 'Content-Type': 'application/json'
             }
 
@@ -191,14 +205,14 @@ def search_zendesk_tickets(query):
 
 def search_confluence_pages(query):
     """Search Confluence for relevant pages using API"""
-    # API calls disabled for now - using fallback data
-    if False:  # Change to True when credentials are added
+    # Check if Confluence credentials are available
+    print(f"DEBUG: CONFLUENCE_EMAIL={CONFLUENCE_EMAIL}, CONFLUENCE_TOKEN={'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+    if CONFLUENCE_EMAIL and CONFLUENCE_TOKEN:
         try:
             import base64
-            # Confluence API credentials
-            confluence_url = "https://blueshift.atlassian.net/wiki"
-            # Use your Atlassian API token here
-            auth_token = base64.b64encode("your-email@blueshift.com:your-api-token".encode()).decode()
+            # Confluence API credentials from environment
+            confluence_url = CONFLUENCE_URL
+            auth_token = base64.b64encode(f"{CONFLUENCE_EMAIL}:{CONFLUENCE_TOKEN}".encode()).decode()
 
             headers = {
                 'Authorization': f'Basic {auth_token}',
@@ -311,6 +325,9 @@ def index():
 @app.route('/query', methods=['POST'])
 def handle_query():
     try:
+        print(f"DEBUG VARS: JIRA_EMAIL={JIRA_EMAIL}, JIRA_TOKEN={'SET' if JIRA_TOKEN else 'NOT SET'}")
+        print(f"DEBUG VARS: ZENDESK_EMAIL={ZENDESK_EMAIL}, ZENDESK_TOKEN={'SET' if ZENDESK_TOKEN else 'NOT SET'}, SUBDOMAIN={ZENDESK_SUBDOMAIN}")
+
         data = request.get_json()
         query = data.get('query', '').strip()
 
@@ -853,6 +870,13 @@ MAIN_TEMPLATE = '''
 
 if __name__ == '__main__':
     print("Starting Fixed Blueshift Support Bot...")
-    port = int(os.environ.get('PORT', 8103))
+    print(f"DEBUG: Environment variables check:")
+    print(f"  CLAUDE_API_KEY: {'SET' if AI_API_KEY else 'NOT SET'}")
+    print(f"  JIRA_EMAIL: {JIRA_EMAIL}")
+    print(f"  JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+    print(f"  ZENDESK_EMAIL: {ZENDESK_EMAIL}")
+    print(f"  ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+    print(f"  ZENDESK_SUBDOMAIN: {ZENDESK_SUBDOMAIN}")
+    port = int(os.environ.get('PORT', 8080))
     print(f"Visit: http://localhost:{port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)

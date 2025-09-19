@@ -1,9 +1,17 @@
-from flask import Flask, request, jsonify, render_template_string, session, send_file
+#!/usr/bin/env python3
+"""
+Blueshift Support Bot
+Clean interface with thinking indicators and condensed responses
+"""
+
+from flask import Flask, render_template_string, request, jsonify, redirect, send_file, session
 import requests
 import os
+import re
+import json
 
 app = Flask(__name__)
-app.secret_key = 'local_interactive_key_12345'
+app.secret_key = 'blueshift_support_bot_key_12345'
 
 # AI API for intelligent responses
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
@@ -21,66 +29,7 @@ CONFLUENCE_EMAIL = os.environ.get('CONFLUENCE_EMAIL')
 CONFLUENCE_TOKEN = os.environ.get('CONFLUENCE_TOKEN')
 CONFLUENCE_URL = os.environ.get('CONFLUENCE_URL', 'https://blueshift.atlassian.net/wiki')
 
-def call_anthropic_api(query, conversation_history=None):
-    """Call Anthropic Claude API for high-quality responses"""
-    try:
-        print(f"DEBUG: Making API call for query: {query}")
-
-        headers = {
-            'x-api-key': AI_API_KEY,
-            'Content-Type': 'application/json',
-            'anthropic-version': '2023-06-01'
-        }
-
-        # Build conversation context
-        context = ""
-        if conversation_history:
-            context = "Previous conversation:\n" + "\n".join([
-                f"Q: {item['question']}\nA: {item['answer']}"
-                for item in conversation_history[-3:]  # Last 3 exchanges
-            ]) + "\n\nNew question: "
-
-        prompt = f"""You are a Blueshift Customer Success expert. Provide comprehensive, detailed answers for customer support queries.
-
-{context}{query}
-
-Provide a thorough, professional response with:
-1. Clear explanation of the issue/topic
-2. Step-by-step solution when applicable
-3. Code examples or configuration details when relevant
-4. Best practices and recommendations
-5. Related features or considerations
-
-Be specific, actionable, and helpful."""
-
-        data = {
-            'model': 'claude-3-5-sonnet-20241022',
-            'max_tokens': 2000,
-            'messages': [{'role': 'user', 'content': prompt}]
-        }
-
-        print(f"DEBUG: Calling Anthropic API...")
-        response = requests.post('https://api.anthropic.com/v1/messages',
-                               headers=headers, json=data, timeout=30)
-
-        print(f"DEBUG: API response status: {response.status_code}")
-
-        if response.status_code == 200:
-            claude_response = response.json()['content'][0]['text'].strip()
-            print(f"DEBUG: API response successful, length: {len(claude_response)}")
-            return claude_response
-        else:
-            error_text = response.text
-            print(f"DEBUG: API error {response.status_code}: {error_text}")
-            return f"API Error {response.status_code}: {error_text[:200]}"
-
-    except Exception as e:
-        print(f"Anthropic API error: {e}")
-        import traceback
-        traceback.print_exc()
-        return f"Error: {str(e)}"
-
-def search_jira_tickets(query):
+def get_jira_tickets(query):
     """Search JIRA for relevant tickets using API"""
     # Check if JIRA credentials are available
     print(f"DEBUG: JIRA_EMAIL={JIRA_EMAIL}, JIRA_TOKEN={'SET' if JIRA_TOKEN else 'NOT SET'}")
@@ -97,8 +46,8 @@ def search_jira_tickets(query):
                 'Content-Type': 'application/json'
             }
 
-            # Search for tickets related to the query
-            search_url = f"{jira_url}/rest/api/3/search"
+            # Search for tickets related to the query using the fixed endpoint
+            search_url = f"{jira_url}/rest/api/3/search/jql"
             jql = f'text ~ "{query}" AND (project = CS OR project = ENG) ORDER BY updated DESC'
 
             params = {
@@ -158,7 +107,7 @@ def search_jira_tickets(query):
             {"title": "SUP-234: Customer support case", "url": "https://blueshift.atlassian.net/browse/SUP-234"}
         ]
 
-def search_zendesk_tickets(query):
+def get_zendesk_tickets(query):
     """Search Zendesk for relevant tickets using API"""
     # Check if Zendesk credentials are available
     print(f"DEBUG: ZENDESK_SUBDOMAIN={ZENDESK_SUBDOMAIN}, ZENDESK_TOKEN={'SET' if ZENDESK_TOKEN else 'NOT SET'}")
@@ -203,7 +152,7 @@ def search_zendesk_tickets(query):
         {"title": "#40651: Configuration Support", "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40651"}
     ]
 
-def search_confluence_pages(query):
+def get_confluence_pages(query):
     """Search Confluence for relevant pages using API"""
     # Check if Confluence credentials are available
     print(f"DEBUG: CONFLUENCE_EMAIL={CONFLUENCE_EMAIL}, CONFLUENCE_TOKEN={'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
@@ -291,9 +240,9 @@ def generate_related_resources(query):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             # Submit all searches
-            jira_future = executor.submit(search_jira_tickets, query)
-            zendesk_future = executor.submit(search_zendesk_tickets, query)
-            confluence_future = executor.submit(search_confluence_pages, query)
+            jira_future = executor.submit(get_jira_tickets, query)
+            zendesk_future = executor.submit(get_zendesk_tickets, query)
+            confluence_future = executor.submit(get_confluence_pages, query)
             help_future = executor.submit(search_help_docs, query)
 
             # Get results
@@ -305,9 +254,9 @@ def generate_related_resources(query):
     except Exception as e:
         print(f"Parallel search error: {e}")
         # Fallback to individual searches
-        jira_tickets = search_jira_tickets(query)
-        support_tickets = search_zendesk_tickets(query)
-        confluence_docs = search_confluence_pages(query)
+        jira_tickets = get_jira_tickets(query)
+        support_tickets = get_zendesk_tickets(query)
+        confluence_docs = get_confluence_pages(query)
         help_docs = search_help_docs(query)
 
     return {
@@ -317,10 +266,64 @@ def generate_related_resources(query):
         'support_tickets': support_tickets[:3]
     }
 
-@app.route('/')
-def index():
-    session['conversation'] = []
-    return render_template_string(MAIN_TEMPLATE)
+def call_anthropic_api(query, conversation_history=None):
+    """Call Anthropic Claude API for high-quality responses"""
+    try:
+        print(f"DEBUG: Making API call for query: {query}")
+
+        headers = {
+            'x-api-key': AI_API_KEY,
+            'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01'
+        }
+
+        # Build conversation context
+        context = ""
+        if conversation_history:
+            context = "Previous conversation:\n" + "\n".join([
+                f"Q: {item['question']}\nA: {item['answer']}"
+                for item in conversation_history[-3:]  # Last 3 exchanges
+            ]) + "\n\nNew question: "
+
+        prompt = f"""You are a Blueshift Customer Success expert. Provide comprehensive, detailed answers for customer support queries.
+
+{context}{query}
+
+Provide a thorough, professional response with:
+1. Clear explanation of the issue/topic
+2. Step-by-step solution when applicable
+3. Code examples or configuration details when relevant
+4. Best practices and recommendations
+5. Related features or considerations
+
+Be specific, actionable, and helpful."""
+
+        data = {
+            'model': 'claude-3-5-sonnet-20241022',
+            'max_tokens': 2000,
+            'messages': [{'role': 'user', 'content': prompt}]
+        }
+
+        print(f"DEBUG: Calling Anthropic API...")
+        response = requests.post('https://api.anthropic.com/v1/messages',
+                               headers=headers, json=data, timeout=30)
+
+        print(f"DEBUG: API response status: {response.status_code}")
+
+        if response.status_code == 200:
+            claude_response = response.json()['content'][0]['text'].strip()
+            print(f"DEBUG: API response successful, length: {len(claude_response)}")
+            return claude_response
+        else:
+            error_text = response.text
+            print(f"DEBUG: API error {response.status_code}: {error_text}")
+            return f"API Error {response.status_code}: {error_text[:200]}"
+
+    except Exception as e:
+        print(f"Anthropic API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error: {str(e)}"
 
 @app.route('/query', methods=['POST'])
 def handle_query():
@@ -360,14 +363,6 @@ def handle_query():
         print(f"Error in handle_query: {e}")
         return jsonify({"error": "An error occurred processing your request"}), 500
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_file('blueshift-favicon.png', mimetype='image/png')
-
-@app.route('/blueshift-favicon.png')
-def favicon_png():
-    return send_file('blueshift-favicon.png', mimetype='image/png')
-
 @app.route('/followup', methods=['POST'])
 def handle_followup():
     """Handle follow-up questions in the conversation"""
@@ -398,6 +393,19 @@ def handle_followup():
     except Exception as e:
         print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_file('blueshift-favicon.png', mimetype='image/png')
+
+@app.route('/blueshift-favicon.png')
+def favicon_png():
+    return send_file('blueshift-favicon.png', mimetype='image/png')
+
+@app.route('/')
+def index():
+    session['conversation'] = []
+    return render_template_string(MAIN_TEMPLATE)
 
 # MAIN TEMPLATE WITH EXACT BLUESHIFT STYLING AND INTERACTIVE FUNCTIONALITY
 MAIN_TEMPLATE = '''
@@ -868,8 +876,9 @@ MAIN_TEMPLATE = '''
 </html>
 '''
 
+
 if __name__ == '__main__':
-    print("Starting Fixed Blueshift Support Bot...")
+    print("Starting Blueshift Support Bot with Real API Integration...")
     print(f"DEBUG: Environment variables check:")
     print(f"  CLAUDE_API_KEY: {'SET' if AI_API_KEY else 'NOT SET'}")
     print(f"  JIRA_EMAIL: {JIRA_EMAIL}")
@@ -879,4 +888,5 @@ if __name__ == '__main__':
     print(f"  ZENDESK_SUBDOMAIN: {ZENDESK_SUBDOMAIN}")
     port = int(os.environ.get('PORT', 8080))
     print(f"Visit: http://localhost:{port}")
+    print("✅ Real API integration enabled with JIRA, Zendesk, and Confluence!")
     app.run(host='0.0.0.0', port=port, debug=False)

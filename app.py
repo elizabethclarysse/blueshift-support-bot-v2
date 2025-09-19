@@ -12,8 +12,7 @@ import json
 
 app = Flask(__name__)
 
-# AI API for intelligent responses
-AI_API_KEY = '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'
+AI_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
 
 def generate_contextual_resources(query):
     """Generate contextual resources based on the query content."""

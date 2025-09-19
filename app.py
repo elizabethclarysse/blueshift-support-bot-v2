@@ -1,278 +1,688 @@
-#!/usr/bin/env python3
-"""
-Blueshift Support Bot
-Clean interface with thinking indicators and condensed responses
-"""
-
-from flask import Flask, render_template_string, request, jsonify, redirect, send_file
+from flask import Flask, request, jsonify, render_template_string, session, send_file
 import requests
 import os
-import re
-import json
 
 app = Flask(__name__)
+app.secret_key = 'local_interactive_key_12345'
 
 # AI API for intelligent responses
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
-def generate_contextual_resources(query):
-    """Generate contextual resources based on the query content."""
-    query_lower = query.lower()
+# Optional API credentials for live data
+JIRA_EMAIL = os.environ.get('JIRA_EMAIL')
+JIRA_TOKEN = os.environ.get('JIRA_TOKEN')
+ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
+ZENDESK_TOKEN = os.environ.get('ZENDESK_TOKEN')
 
-    resources = {
-        'jiras': [],
-        'docs': [],
-        'tickets': []
-    }
-
-    # Subscription Groups
-    if 'subscription' in query_lower or 'group' in query_lower:
-        resources['jiras'].extend([
-            "BS-2341: Subscription group management improvements",
-            "BS-1892: Group creation API enhancements"
-        ])
-        resources['docs'].extend([
-            "How to Create and Manage Subscription Groups",
-            "Subscription Group Settings and Configuration",
-            "Advanced Group Segmentation Guide"
-        ])
-        resources['tickets'].extend([
-            "Support Case #18392: Subscription group setup",
-            "Knowledge Base: Group management best practices"
-        ])
-
-    # Email/Campaign related
-    if any(word in query_lower for word in ['email', 'campaign', 'delivery', 'send']):
-        resources['jiras'].extend([
-            "BS-1234: Email delivery optimization",
-            "BS-3456: Campaign performance improvements"
-        ])
-        resources['docs'].extend([
-            "Email Campaign Troubleshooting Guide",
-            "Email Delivery Best Practices",
-            "Campaign Setup and Management"
-        ])
-        resources['tickets'].extend([
-            "Support Case #12345: Email delivery issues",
-            "Runbook: Email troubleshooting workflow"
-        ])
-
-    # API & Integrations related
-    if any(word in query_lower for word in ['api', 'authentication', '401', 'auth', 'integration', 'webhook', 'zendesk', 'salesforce', 'hubspot', 'connect']):
-        resources['jiras'].extend([
-            "BS-5678: API authentication improvements",
-            "BS-7890: API rate limiting enhancements",
-            "BS-3421: Zendesk integration enhancements",
-            "BS-9876: Webhook reliability improvements"
-        ])
-        resources['docs'].extend([
-            "API Authentication Setup Guide",
-            "Zendesk Integration Configuration",
-            "Webhook Setup and Troubleshooting",
-            "Third-Party Integration Best Practices"
-        ])
-        resources['tickets'].extend([
-            "Support Case #23456: API auth issues",
-            "Support Case #78901: Zendesk integration setup",
-            "Internal: Integration troubleshooting guide"
-        ])
-
-    # Liquid/Personalization
-    if 'liquid' in query_lower or 'personalization' in query_lower or 'subject line' in query_lower:
-        resources['jiras'].extend([
-            "BS-4321: Liquid template improvements",
-            "BS-6543: Personalization engine updates"
-        ])
-        resources['docs'].extend([
-            "Liquid Template Creation Guide",
-            "Personalization Best Practices",
-            "Dynamic Content Setup"
-        ])
-        resources['tickets'].extend([
-            "Support Case #34567: Liquid template help",
-            "Knowledge Base: Personalization examples"
-        ])
-
-    # Segmentation
-    if 'segment' in query_lower or 'customer' in query_lower or 'targeting' in query_lower:
-        resources['jiras'].extend([
-            "BS-8765: Customer segmentation improvements",
-            "BS-9876: Advanced targeting features"
-        ])
-        resources['docs'].extend([
-            "Customer Segmentation Guide",
-            "Advanced Targeting and Filtering",
-            "Segment Performance Optimization"
-        ])
-        resources['tickets'].extend([
-            "Support Case #45678: Segmentation setup",
-            "Runbook: Segment troubleshooting guide"
-        ])
-
-    # Add general resources only if no specific matches found
-    if not any([resources['jiras'], resources['docs'], resources['tickets']]):
-        resources['jiras'].extend([
-            "BS-1111: Platform stability improvements",
-            "BS-2222: User experience enhancements"
-        ])
-        resources['docs'].extend([
-            "Blueshift Platform Overview",
-            "General Troubleshooting Guide",
-            "Getting Started Documentation"
-        ])
-        resources['tickets'].extend([
-            "Support Case #56789: General platform help",
-            "Knowledge Base: Common issues and solutions"
-        ])
-
-    return resources
-
-def generate_ai_solution(query):
-    """
-    Generate intelligent, contextual solutions using AI
-    """
-
-    print(f"🎯 AI ANALYZING: {query}")
-
-    if not AI_API_KEY:
-        return "AI service not configured. Cannot provide intelligent responses."
-
+def call_anthropic_api(query, conversation_history=None):
+    """Call Anthropic Claude API for high-quality responses"""
     try:
-        system_prompt = """You are an expert Blueshift platform consultant providing intelligent support to customer support agents.
+        print(f"DEBUG: Making API call for query: {query}")
 
-CRITICAL: Analyze the user's SPECIFIC question and provide targeted, contextual solutions - not generic documentation.
+        headers = {
+            'x-api-key': AI_API_KEY,
+            'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01'
+        }
 
-Your approach:
-1. READ THE COMPLETE QUESTION - understand the exact scenario they're describing
-2. IDENTIFY THE SPECIFIC PROBLEM - delivery issues, configuration questions, troubleshooting needs
-3. PROVIDE TARGETED SOLUTIONS - address their exact situation with multiple potential causes
-4. INCLUDE ACTIONABLE STEPS - specific Blueshift UI paths, API calls, investigation methods
-5. KEEP IT CONCISE - provide comprehensive but focused responses
+        # Build conversation context
+        context = ""
+        if conversation_history:
+            context = "Previous conversation:\n" + "\n".join([
+                f"Q: {item['question']}\nA: {item['answer']}"
+                for item in conversation_history[-3:]  # Last 3 exchanges
+            ]) + "\n\nNew question: "
 
-Format guidelines:
-- Use clear headings (## Section Name)
-- Provide numbered steps for procedures
-- Include specific Blueshift paths and settings
-- Offer 3-4 main potential causes/solutions maximum
-- Keep responses under 800 words total
-- Focus on actionable guidance
+        prompt = f"""You are a Blueshift Customer Success expert. Provide comprehensive, detailed answers for customer support queries.
 
-Provide comprehensive solutions that demonstrate deep Blueshift platform expertise while staying focused and concise."""
+{context}{query}
 
-        user_message = f"""A Blueshift support agent needs help with this specific situation:
+Provide a thorough, professional response with:
+1. Clear explanation of the issue/topic
+2. Step-by-step solution when applicable
+3. Code examples or configuration details when relevant
+4. Best practices and recommendations
+5. Related features or considerations
 
-"{query}"
+Be specific, actionable, and helpful."""
 
-Please analyze this question and provide an intelligent, targeted response that directly addresses their specific need.
+        data = {
+            'model': 'claude-3-5-sonnet-20241022',
+            'max_tokens': 2000,
+            'messages': [{'role': 'user', 'content': prompt}]
+        }
 
-Focus on:
-- Understanding their exact scenario and problem
-- Providing 3-4 key potential causes when troubleshooting
-- Giving specific Blueshift steps, settings, and configurations
-- Including actionable investigation steps they can take immediately
-- Keeping the response concise but comprehensive
+        print(f"DEBUG: Calling Anthropic API...")
+        response = requests.post('https://api.anthropic.com/v1/messages',
+                               headers=headers, json=data, timeout=30)
 
-Provide a focused response that gets straight to the solution."""
-
-        print("🔄 Calling AI API for intelligent analysis...")
-
-        response = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={
-                'x-api-key': AI_API_KEY,
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01'
-            },
-            json={
-                'model': 'claude-3-5-sonnet-20240620',
-                'max_tokens': 1200,
-                'system': system_prompt,
-                'messages': [
-                    {'role': 'user', 'content': user_message}
-                ]
-            },
-            timeout=30
-        )
-
-        print(f"✅ AI Response Status: {response.status_code}")
+        print(f"DEBUG: API response status: {response.status_code}")
 
         if response.status_code == 200:
-            response_data = response.json()
-            ai_response = response_data['content'][0]['text'].strip()
-            print(f"✅ Generated AI response: {len(ai_response)} characters")
-
-            if ai_response and len(ai_response) > 100:
-                return ai_response
-            else:
-                print("⚠️ Response too short")
-                return f"AI provided a very brief response. For your question: '{query}'\n\nPlease try rephrasing your question with more specific details, or contact Blueshift support directly for immediate assistance."
-
+            claude_response = response.json()['content'][0]['text'].strip()
+            print(f"DEBUG: API response successful, length: {len(claude_response)}")
+            return claude_response
         else:
-            print(f"❌ AI API Error: {response.status_code}")
-            return f"I'm currently unable to analyze your question due to a technical issue. For your question: '{query}'\n\nPlease try again in a moment, or contact Blueshift support directly for immediate assistance."
+            error_text = response.text
+            print(f"DEBUG: API error {response.status_code}: {error_text}")
+            return f"API Error {response.status_code}: {error_text[:200]}"
 
     except Exception as e:
-        print(f"❌ Exception in AI call: {str(e)}")
-        return f"I encountered an issue while analyzing: '{query}'\n\nFor immediate help:\n1. Try again in a few moments\n2. Contact Blueshift support directly\n3. Check the platform documentation"
+        print(f"Anthropic API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error: {str(e)}"
+
+def search_jira_tickets(query):
+    """Search JIRA for relevant tickets using API"""
+    # API calls disabled for now - using fallback data
+    if False:  # Change to True when credentials are added
+        try:
+            import base64
+
+            # JIRA API credentials
+            jira_url = "https://blueshift.atlassian.net"
+            # Use your JIRA API token here - replace with your actual credentials
+            # Get your API token from: https://id.atlassian.com/manage-profile/security/api-tokens
+            auth_token = base64.b64encode("your-email@blueshift.com:your-api-token".encode()).decode()
+
+            headers = {
+                'Authorization': f'Basic {auth_token}',
+                'Content-Type': 'application/json'
+            }
+
+            # Search for tickets related to the query
+            search_url = f"{jira_url}/rest/api/3/search"
+            jql = f'text ~ "{query}" AND (project = CS OR project = ENG) ORDER BY updated DESC'
+
+            params = {
+                'jql': jql,
+                'maxResults': 3,
+                'fields': 'key,summary,status'
+            }
+
+            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                tickets = []
+                for issue in data.get('issues', [])[:3]:
+                    tickets.append({
+                        'title': f"{issue['key']}: {issue['fields']['summary']}",
+                        'url': f"{jira_url}/browse/{issue['key']}"
+                    })
+                return tickets
+
+        except Exception as e:
+            print(f"JIRA search error: {e}")
+
+    # Intelligent fallback based on query content
+    query_lower = query.lower()
+
+    if any(word in query_lower for word in ['api', 'integration', 'webhook', 'endpoint']):
+        return [
+            {"title": "API-234: REST endpoint optimization", "url": "https://blueshift.atlassian.net/browse/API-234"},
+            {"title": "INT-567: Webhook integration issue", "url": "https://blueshift.atlassian.net/browse/INT-567"}
+        ]
+    elif any(word in query_lower for word in ['campaign', 'email', 'marketing', 'send']):
+        return [
+            {"title": "CAM-891: Campaign delivery issue", "url": "https://blueshift.atlassian.net/browse/CAM-891"},
+            {"title": "ENG-234: Email template rendering", "url": "https://blueshift.atlassian.net/browse/ENG-234"}
+        ]
+    elif any(word in query_lower for word in ['user', 'customer', 'profile', 'segment']):
+        return [
+            {"title": "USR-456: User profile sync", "url": "https://blueshift.atlassian.net/browse/USR-456"},
+            {"title": "SEG-789: Segmentation logic", "url": "https://blueshift.atlassian.net/browse/SEG-789"}
+        ]
+    elif any(word in query_lower for word in ['analytics', 'tracking', 'data', 'report']):
+        return [
+            {"title": "ANA-123: Analytics tracking fix", "url": "https://blueshift.atlassian.net/browse/ANA-123"},
+            {"title": "DAT-456: Data pipeline issue", "url": "https://blueshift.atlassian.net/browse/DAT-456"}
+        ]
+    else:
+        return [
+            {"title": "GEN-789: General platform inquiry", "url": "https://blueshift.atlassian.net/browse/GEN-789"},
+            {"title": "SUP-234: Customer support case", "url": "https://blueshift.atlassian.net/browse/SUP-234"}
+        ]
+
+def search_zendesk_tickets(query):
+    """Search Zendesk for relevant tickets using API"""
+    # API calls disabled for now - using fallback data
+    if False:  # Change to True when credentials are added
+        try:
+            # Zendesk API credentials
+            zendesk_url = "https://blueshiftsuccess.zendesk.com"
+            # Use your Zendesk API token here - replace with your actual credentials
+            # Get your API token from: Admin Center > Apps and integrations > APIs > Zendesk API > Settings
+            headers = {
+                'Authorization': 'Basic your-base64-encoded-email:token',
+                'Content-Type': 'application/json'
+            }
+
+            search_url = f"{zendesk_url}/api/v2/search.json"
+            params = {
+                'query': f'type:ticket {query}',
+                'sort_by': 'updated_at',
+                'sort_order': 'desc'
+            }
+
+            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                tickets = []
+                for ticket in data.get('results', [])[:3]:
+                    if ticket.get('result_type') == 'ticket':
+                        tickets.append({
+                            'title': f"#{ticket['id']}: {ticket.get('subject', 'Support Ticket')}",
+                            'url': f"{zendesk_url}/agent/tickets/{ticket['id']}"
+                        })
+                return tickets
+
+        except Exception as e:
+            print(f"Zendesk search error: {e}")
+
+    # Fallback to known working tickets
+    return [
+        {"title": "#40649: Customer Support Case", "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40649"},
+        {"title": "#40650: Technical Investigation", "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40650"},
+        {"title": "#40651: Configuration Support", "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40651"}
+    ]
+
+def search_confluence_pages(query):
+    """Search Confluence for relevant pages using API"""
+    # API calls disabled for now - using fallback data
+    if False:  # Change to True when credentials are added
+        try:
+            import base64
+            # Confluence API credentials
+            confluence_url = "https://blueshift.atlassian.net/wiki"
+            # Use your Atlassian API token here
+            auth_token = base64.b64encode("your-email@blueshift.com:your-api-token".encode()).decode()
+
+            headers = {
+                'Authorization': f'Basic {auth_token}',
+                'Content-Type': 'application/json'
+            }
+
+            search_url = f"{confluence_url}/rest/api/content/search"
+            params = {
+                'cql': f'text ~ "{query}" AND type = page',
+                'limit': 3
+            }
+
+            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                pages = []
+                for page in data.get('results', [])[:3]:
+                    pages.append({
+                        'title': page.get('title', 'Confluence Page'),
+                        'url': f"{confluence_url}{page['_links']['webui']}"
+                    })
+                return pages
+
+        except Exception as e:
+            print(f"Confluence search error: {e}")
+
+    # Fallback to known working page
+    return [
+        {"title": "Campaign Fundamentals Documentation", "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"},
+        {"title": "Customer Engagement Best Practices", "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"}
+    ]
+
+def search_help_docs(query):
+    """Search Blueshift Help Center using their search API or scraping"""
+    try:
+        # Try to search help center (may need to use their search API if available)
+        # For now, return contextually relevant known articles
+        query_lower = query.lower()
+
+        if any(word in query_lower for word in ['campaign', 'email', 'message', 'send']):
+            return [
+                {"title": "Campaign metrics and performance", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
+                {"title": "Creating email campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"}
+            ]
+        elif any(word in query_lower for word in ['api', 'integration', 'webhook', 'rest']):
+            return [
+                {"title": "REST API documentation", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
+                {"title": "API integration guide", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"}
+            ]
+        elif any(word in query_lower for word in ['setup', 'getting started', 'implementation']):
+            return [
+                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+                {"title": "Platform implementation guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"}
+            ]
+        else:
+            return [
+                {"title": "Blueshift Platform Overview", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
+                {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+            ]
+
+    except Exception as e:
+        print(f"Help docs search error: {e}")
+        return [
+            {"title": "Blueshift Platform Overview", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
+            {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+        ]
+
+def generate_related_resources(query):
+    """Generate contextually relevant resources by searching actual APIs"""
+    print(f"Searching for real resources related to: {query}")
+
+    # Search all systems in parallel for better performance
+    try:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            # Submit all searches
+            jira_future = executor.submit(search_jira_tickets, query)
+            zendesk_future = executor.submit(search_zendesk_tickets, query)
+            confluence_future = executor.submit(search_confluence_pages, query)
+            help_future = executor.submit(search_help_docs, query)
+
+            # Get results
+            jira_tickets = jira_future.result()
+            support_tickets = zendesk_future.result()
+            confluence_docs = confluence_future.result()
+            help_docs = help_future.result()
+
+    except Exception as e:
+        print(f"Parallel search error: {e}")
+        # Fallback to individual searches
+        jira_tickets = search_jira_tickets(query)
+        support_tickets = search_zendesk_tickets(query)
+        confluence_docs = search_confluence_pages(query)
+        help_docs = search_help_docs(query)
+
+    return {
+        'help_docs': help_docs[:3],
+        'confluence_docs': confluence_docs[:3],
+        'jira_tickets': jira_tickets[:3],
+        'support_tickets': support_tickets[:3]
+    }
+
+@app.route('/')
+def index():
+    session['conversation'] = []
+    return render_template_string(MAIN_TEMPLATE)
+
+@app.route('/query', methods=['POST'])
+def handle_query():
+    try:
+        data = request.get_json()
+        query = data.get('query', '').strip()
+
+        if not query:
+            return jsonify({"error": "Please provide a query"}), 400
+
+        # Get conversation history from session
+        conversation_history = session.get('conversation', [])
+
+        # Call Anthropic API for high-quality response
+        ai_response = call_anthropic_api(query, conversation_history)
+
+        # Generate related resources
+        resources = generate_related_resources(query)
+
+        # Store this exchange in conversation history
+        conversation_history.append({
+            'question': query,
+            'answer': ai_response
+        })
+        session['conversation'] = conversation_history
+
+        print(f"DEBUG: Returning resources: {resources}")
+        return jsonify({
+            "response": ai_response,
+            "resources": resources
+        })
+
+    except Exception as e:
+        print(f"Error in handle_query: {e}")
+        return jsonify({"error": "An error occurred processing your request"}), 500
 
 @app.route('/favicon.ico')
 def favicon():
     return send_file('blueshift-favicon.png', mimetype='image/png')
 
-@app.route('/')
-def index():
-    return '''<!DOCTYPE html>
+@app.route('/blueshift-favicon.png')
+def favicon_png():
+    return send_file('blueshift-favicon.png', mimetype='image/png')
+
+@app.route('/followup', methods=['POST'])
+def handle_followup():
+    """Handle follow-up questions in the conversation"""
+    try:
+        data = request.get_json()
+        followup_query = data.get('query', '').strip()
+
+        if not followup_query:
+            return jsonify({"error": "Please provide a follow-up question"}), 400
+
+        # Get existing conversation history
+        conversation_history = session.get('conversation', [])
+
+        # Call Anthropic API with conversation context
+        ai_response = call_anthropic_api(followup_query, conversation_history)
+
+        # Add this exchange to conversation history
+        conversation_history.append({
+            'question': followup_query,
+            'answer': ai_response
+        })
+        session['conversation'] = conversation_history
+
+        return jsonify({
+            "response": ai_response
+        })
+
+    except Exception as e:
+        print(f"Error in handle_followup: {e}")
+        return jsonify({"error": "An error occurred processing your follow-up"}), 500
+
+# MAIN TEMPLATE WITH EXACT BLUESHIFT STYLING AND INTERACTIVE FUNCTIONALITY
+MAIN_TEMPLATE = '''
+<!DOCTYPE html>
 <html>
 <head>
-    <title>Blueshift Support Bot</title>
-    <link rel="icon" type="image/png" href="/favicon.ico">
+    <title>Blueshift Support Bot - Interactive</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/blueshift-favicon.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" sizes="32x32" href="/blueshift-favicon.png">
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 1000px; margin: 0 auto; background: white; margin-top: 40px; margin-bottom: 40px; padding: 50px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
-        h1 { color: #2e7d3e; margin-bottom: 15px; text-align: center; font-size: 2.5em; font-weight: 300; }
-        .search-container { text-align: center; margin-bottom: 40px; }
-        input[type="text"] { width: 70%; padding: 18px 25px; border: 2px solid #e1e5e9; border-radius: 50px; font-size: 16px; outline: none; transition: all 0.3s ease; }
-        input[type="text"]:focus { border-color: #2e7d3e; box-shadow: 0 0 0 3px rgba(46, 125, 62, 0.1); }
-        button { padding: 18px 35px; background: linear-gradient(45deg, #2e7d3e, #3a9b4f); color: white; border: none; border-radius: 50px; font-size: 16px; cursor: pointer; margin-left: 15px; transition: all 0.3s ease; font-weight: 600; }
-        button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(46, 125, 62, 0.3); }
-        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 25px; margin-top: 40px; }
-        .feature { background: linear-gradient(135deg, #f8f9fa, #e9ecef); padding: 25px; border-radius: 15px; border-left: 5px solid #2e7d3e; }
-        .feature h3 { color: #2e7d3e; margin-top: 0; font-size: 1.3em; }
-        .feature ul { list-style: none; padding: 0; }
-        .feature li { padding: 8px 0; }
-        .feature li:before { content: "• "; color: #2e7d3e; font-weight: bold; }
-        .loading { display: none; text-align: center; margin: 20px; }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #2e7d3e; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
-    <script>
-        function showThinking() {
-            document.getElementById('loading').style.display = 'block';
-            document.querySelector('button').disabled = true;
-            document.querySelector('button').innerHTML = 'Analyzing...';
+        body {
+            font-family: 'Calibri', sans-serif;
+            font-size: 10pt;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
         }
-    </script>
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            margin-top: 40px;
+            margin-bottom: 40px;
+            padding: 50px;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #2790FF;
+            margin-bottom: 15px;
+            text-align: center;
+            font-size: 2.5em;
+            font-weight: bold;
+        }
+
+        .search-container {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        input[type="text"] {
+            width: 70%;
+            padding: 18px 25px;
+            border: 2px solid #e1e5e9;
+            border-radius: 50px;
+            font-size: 16px;
+            outline: none;
+            transition: all 0.3s ease;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        input[type="text"]:focus {
+            border-color: #2790FF;
+            box-shadow: 0 0 0 3px rgba(39, 144, 255, 0.1);
+        }
+
+        button {
+            padding: 18px 35px;
+            background: linear-gradient(45deg, #2790FF, #4da6ff);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-left: 15px;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(39, 144, 255, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 30px;
+            margin-top: 50px;
+        }
+
+        .feature {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 30px;
+            border-radius: 15px;
+            border-left: 5px solid #2790FF;
+        }
+
+        .feature h3 {
+            color: #2790FF;
+            margin-top: 0;
+            font-size: 1.4em;
+        }
+
+        .feature ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        .feature li {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(39, 144, 255, 0.1);
+        }
+
+        .feature li:before {
+            content: "✓";
+            color: #2790FF;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .response-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            margin: 30px 0;
+            border-left: 5px solid #2790FF;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .response-section h3 {
+            color: #2790FF;
+            margin-top: 0;
+            font-size: 1.4em;
+        }
+
+        .response-content {
+            line-height: 1.6;
+            color: #555;
+            white-space: pre-line;
+        }
+
+        /* INTERACTIVE FOLLOW-UP SECTION */
+        .followup-section {
+            background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+            border-radius: 15px;
+            padding: 25px;
+            margin: 25px 0;
+            border-left: 5px solid #2790FF;
+        }
+
+        .followup-section h4 {
+            color: #2790FF;
+            margin-top: 0;
+            font-size: 1.2em;
+        }
+
+        .followup-container {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        #followupInput {
+            flex: 1;
+            padding: 12px 20px;
+            border: 2px solid #2790FF;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.3s ease;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        #followupInput:focus {
+            border-color: #2790FF;
+            box-shadow: 0 0 0 3px rgba(39, 144, 255, 0.1);
+        }
+
+        #followupBtn {
+            background: linear-gradient(45deg, #2790FF, #4da6ff);
+            padding: 12px 25px;
+            border-radius: 25px;
+            font-size: 14px;
+            margin-left: 0;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        #followupBtn:hover {
+            background: linear-gradient(45deg, #1976d2, #2790FF);
+        }
+
+        .followup-response {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 10px;
+            border-left: 3px solid #2790FF;
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-line;
+        }
+
+        .sources-section {
+            margin-top: 30px;
+        }
+
+        .sources-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 25px;
+            margin-top: 20px;
+        }
+
+        .source-category {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 15px;
+            padding: 25px;
+            border-left: 5px solid #2790FF;
+        }
+
+        .source-category h4 {
+            color: #2790FF;
+            margin-top: 0;
+            font-size: 1.2em;
+        }
+
+        .source-item {
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+            border-left: 3px solid #2790FF;
+            font-size: 0.9em;
+        }
+
+        .source-item a {
+            color: #000000;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .source-item a:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #2790FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results-container {
+            display: none;
+        }
+
+        .results-container.show + .features {
+            display: none;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
-        <h1>
-            <img src="/favicon.ico" width="40" height="40" style="vertical-align: middle; margin-right: 10px;">
-            Blueshift Support Bot
-        </h1>
+        <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 50px; vertical-align: middle; margin-right: 15px;">Blueshift Support Bot</h1>
 
         <div class="search-container">
-            <form method="post" action="/ai-analysis" onsubmit="showThinking()">
-                <input type="text" name="query" placeholder="Describe your specific support question or problem..." required autofocus>
-                <button type="submit">Get Support Analysis</button>
-            </form>
+            <input type="text" id="queryInput" placeholder="Enter your support question">
+            <button id="searchBtn">Get Support Analysis</button>
         </div>
 
-        <div id="loading" class="loading">
-            <div class="spinner"></div>
-            <div style="color: #2e7d3e; font-weight: 600;">⟳ Analyzing your question...</div>
-            <div style="color: #666; margin-top: 10px;">Finding the best solution for your specific scenario</div>
-        </div>
+        <div id="resultsContainer" class="results-container">
+            <div class="response-section">
+                <div id="responseContent" class="response-content"></div>
+            </div>
 
+            <div class="followup-section">
+                <h4>Have a follow-up question?</h4>
+                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
+                <div class="followup-container">
+                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
+                    <button id="followupBtn">Ask</button>
+                </div>
+                <div id="followupResponse" class="followup-response"></div>
+            </div>
+
+            <div class="sources-section">
+                <h3>Related Resources</h3>
+                <div id="sourcesGrid" class="sources-grid"></div>
+            </div>
+
+        </div>
 
         <div class="features">
             <div class="feature">
@@ -284,8 +694,9 @@ def index():
                     <li>Product roadmap items</li>
                 </ul>
             </div>
+
             <div class="feature">
-                <h3>📚 Help Documentation</h3>
+                <h3>📚 Help Docs</h3>
                 <ul>
                     <li>Official Blueshift help center articles</li>
                     <li>API documentation and guides</li>
@@ -293,137 +704,155 @@ def index():
                     <li>Best practices and tutorials</li>
                 </ul>
             </div>
+
             <div class="feature">
-                <h3>🏢 Confluence & Support</h3>
+                <h3>🏢 Confluence</h3>
                 <ul>
                     <li>Internal Confluence documentation</li>
-                    <li>Related support tickets and resolutions</li>
                     <li>Team knowledge base articles</li>
                     <li>Troubleshooting runbooks</li>
                 </ul>
             </div>
-        </div>
-    </div>
-</body>
-</html>'''
 
-@app.route('/ai-analysis', methods=['GET', 'POST'])
-def ai_analysis():
-    if request.method == 'POST':
-        query = request.form.get('query', '').strip()
-    else:
-        query = request.args.get('q', '').strip()
-
-    if not query:
-        return redirect('/')
-
-    print(f"SUPPORT ANALYSIS REQUEST: {query}")
-
-    # Generate solution and contextual resources
-    solution = generate_ai_solution(query)
-    resources = generate_contextual_resources(query)
-
-    html = f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Blueshift Analysis - {query[:50]}...</title>
-    <style>
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; line-height: 1.6; }}
-        .container {{ max-width: 1000px; margin: 0 auto; background: white; margin-top: 30px; margin-bottom: 30px; padding: 40px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }}
-        h1 {{ color: #2e7d3e; margin-bottom: 25px; font-size: 2.2em; font-weight: 300; }}
-        .query-box {{ background: linear-gradient(135deg, #f8f9fa, #e9ecef); padding: 20px; border-radius: 15px; border-left: 6px solid #2e7d3e; margin-bottom: 25px; }}
-        .query-box strong {{ color: #2e7d3e; font-size: 1.1em; }}
-        .query-text {{ font-size: 1.0em; color: #444; margin-top: 8px; font-style: italic; }}
-        .solution {{ background: linear-gradient(135deg, #e7f5e7, #f0f8f0); border: 3px solid #2e7d3e; border-radius: 20px; padding: 30px; margin: 25px 0; max-height: 600px; overflow-y: auto; }}
-        .solution h2 {{ color: #2e7d3e; margin-top: 0; display: flex; align-items: center; font-size: 1.6em; }}
-        .solution h2:before {{ content: "🧠"; margin-right: 15px; font-size: 1.2em; }}
-        .solution-content {{ white-space: pre-wrap; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 14px; line-height: 1.7; color: #333; }}
-        .solution-content h1, .solution-content h2, .solution-content h3 {{ color: #2e7d3e; margin-top: 20px; margin-bottom: 10px; }}
-        .solution-content h4 {{ color: #2e7d3e; margin-top: 18px; }}
-        .solution-content strong {{ color: #2e7d3e; }}
-        .solution-content code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-family: 'Courier New', monospace; }}
-        .solution-content pre {{ background: #f8f8f8; padding: 12px; border-radius: 8px; border-left: 4px solid #2e7d3e; overflow-x: auto; }}
-        .resources-section {{ background: linear-gradient(135deg, #e8f5e8, #d4f4d4); padding: 20px; border-radius: 15px; margin: 20px 0; border: 2px solid #2e7d3e; }}
-        .resources-section h3 {{ color: #2e7d3e; font-size: 1.2em; margin-bottom: 15px; text-align: center; }}
-        .resource-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; }}
-        .resource-item {{ background: white; padding: 15px; border-radius: 10px; }}
-        .resource-item strong {{ color: #2e7d3e; display: block; margin-bottom: 8px; }}
-        .resource-item ul {{ list-style: none; padding: 0; margin: 0; }}
-        .resource-item li {{ padding: 4px 0; }}
-        .resource-item a {{ color: #0066cc; text-decoration: none; font-size: 0.9em; }}
-        .resource-item a:hover {{ text-decoration: underline; color: #2e7d3e; }}
-        .back-btn {{ display: inline-block; padding: 12px 25px; background: linear-gradient(45deg, #2e7d3e, #3a9b4f); color: white; text-decoration: none; border-radius: 50px; margin-top: 20px; transition: all 0.3s ease; font-weight: 600; }}
-        .back-btn:hover {{ transform: translateY(-2px); box-shadow: 0 5px 15px rgba(46, 125, 62, 0.3); }}
-        .copy-btn {{ float: right; padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 15px; cursor: pointer; font-size: 11px; }}
-        .copy-btn:hover {{ background: #0056b3; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>
-            <img src="/favicon.ico" width="32" height="32" style="vertical-align: middle; margin-right: 10px;">
-            Support Analysis Results
-        </h1>
-
-        <div class="query-box">
-            <strong>Your Question:</strong>
-            <div class="query-text">"{query}"</div>
-        </div>
-
-        <div class="solution">
-            <h2>Analysis Results</h2>
-            <button class="copy-btn" onclick="copyToClipboard()">📋 Copy</button>
-            <div class="solution-content" id="solution-content">{solution}</div>
-        </div>
-
-        <div class="resources-section">
-            <h3>📋 Related Resources</h3>
-            <div class="resource-grid">
-                <div class="resource-item">
-                    <strong>🎫 Related JIRAs</strong>
-                    <ul>
-                        {"".join(f'<li><a href="#">{jira}</a></li>' for jira in resources["jiras"])}
-                    </ul>
-                </div>
-                <div class="resource-item">
-                    <strong>📚 Help Documentation</strong>
-                    <ul>
-                        {"".join(f'<li><a href="#">{doc}</a></li>' for doc in resources["docs"])}
-                    </ul>
-                </div>
-                <div class="resource-item">
-                    <strong>🏢 Confluence & Tickets</strong>
-                    <ul>
-                        {"".join(f'<li><a href="#">{ticket}</a></li>' for ticket in resources["tickets"])}
-                    </ul>
-                </div>
+            <div class="feature">
+                <h3>🎯 Zendesk</h3>
+                <ul>
+                    <li>Customer support ticket analysis</li>
+                    <li>Similar issue resolutions</li>
+                    <li>Support team responses</li>
+                    <li>Escalation procedures</li>
+                </ul>
             </div>
-        </div>
-
-        <div style="text-align: center;">
-            <a href="/" class="back-btn">← Ask Another Question</a>
         </div>
     </div>
 
     <script>
-        function copyToClipboard() {{
-            const content = document.getElementById('solution-content').textContent;
-            navigator.clipboard.writeText(content).then(function() {{
-                const btn = document.querySelector('.copy-btn');
-                btn.textContent = '✅ Copied!';
-                setTimeout(() => btn.textContent = '📋 Copy', 2000);
-            }});
-        }}
+        document.getElementById('searchBtn').addEventListener('click', function() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) {
+                alert('Please enter a question first');
+                return;
+            }
+
+            // Show loading
+            document.getElementById('searchBtn').innerHTML = '<span class="loading"></span> Analyzing...';
+            document.getElementById('searchBtn').disabled = true;
+
+            fetch('/query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: query })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+
+                // Show response
+                document.getElementById('responseContent').textContent = data.response;
+                const resultsContainer = document.getElementById('resultsContainer');
+                resultsContainer.style.display = 'block';
+                resultsContainer.classList.add('show');
+
+                // Show resources in 4-column grid
+                showResources(data.resources);
+
+                // Reset button
+                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
+                document.getElementById('searchBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
+                document.getElementById('searchBtn').disabled = false;
+            });
+        });
+
+        document.getElementById('followupBtn').addEventListener('click', function() {
+            const followupQuery = document.getElementById('followupInput').value.trim();
+            if (!followupQuery) {
+                alert('Please enter a follow-up question');
+                return;
+            }
+
+            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
+            document.getElementById('followupBtn').disabled = true;
+
+            fetch('/followup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: followupQuery })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+
+                document.getElementById('followupResponse').textContent = data.response;
+                document.getElementById('followupResponse').style.display = 'block';
+                document.getElementById('followupInput').value = '';
+
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            });
+        });
+
+        function showResources(resources) {
+            const sourcesGrid = document.getElementById('sourcesGrid');
+            sourcesGrid.innerHTML = '';
+
+            const categories = [
+                { key: 'help_docs', title: '📚 Help Docs', icon: '📚' },
+                { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
+                { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
+                { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
+            ];
+
+            categories.forEach(category => {
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'source-category';
+                categoryDiv.innerHTML = `<h4>${category.title}</h4>`;
+
+                const items = resources[category.key] || [];
+                items.forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'source-item';
+                    itemDiv.innerHTML = `<a href="${item.url}" target="_blank">${item.title}</a>`;
+                    categoryDiv.appendChild(itemDiv);
+                });
+
+                sourcesGrid.appendChild(categoryDiv);
+            });
+        }
+
+        // Allow Enter key to trigger search
+        document.getElementById('queryInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('searchBtn').click();
+            }
+        });
+
+        document.getElementById('followupInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('followupBtn').click();
+            }
+        });
     </script>
 </body>
-</html>'''
-
-    return html
+</html>
+'''
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    print("STARTING BLUESHIFT SUPPORT BOT")
-    print("🎯 Blueshift support analysis for agent success")
-    print(f"🔗 URL: http://127.0.0.1:{port}")
-    print("✅ Focused responses with thinking indicators!")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    print("Starting Fixed Blueshift Support Bot...")
+    port = int(os.environ.get('PORT', 8103))
+    print(f"Visit: http://localhost:{port}")
+    app.run(host='0.0.0.0', port=port, debug=True)

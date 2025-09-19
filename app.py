@@ -205,15 +205,15 @@ Provide a focused response that gets straight to the solution."""
                 return ai_response
             else:
                 print("⚠️ Response too short")
-                return f"AI provided a very brief response. For your question: '{query}'\n\nPlease try rephrasing your question with more specific details, or contact Blueshift support directly for immediate assistance."
+                return f"Analysis incomplete for: '{query}'\n\nPlease try rephrasing your question with more specific details about the issue."
 
         else:
             print(f"❌ AI API Error: {response.status_code}")
-            return f"I'm currently unable to analyze your question due to a technical issue. For your question: '{query}'\n\nPlease try again in a moment, or contact Blueshift support directly for immediate assistance."
+            return f"Technical issue analyzing: '{query}'\n\nPlease try again in a moment or check the platform documentation for immediate guidance."
 
     except Exception as e:
         print(f"❌ Exception in AI call: {str(e)}")
-        return f"I encountered an issue while analyzing: '{query}'\n\nFor immediate help:\n1. Try again in a few moments\n2. Contact Blueshift support directly\n3. Check the platform documentation"
+        return f"Issue analyzing: '{query}'\n\nPlease try again in a few moments or check the platform documentation."
 
 @app.route('/favicon.ico')
 def favicon():

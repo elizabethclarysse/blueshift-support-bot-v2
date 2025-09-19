@@ -261,61 +261,62 @@ def get_confluence_pages(query):
     ]
 
 def search_help_docs(query):
-    """Search Blueshift Help Center - direct search approach"""
-    try:
-        print(f"DEBUG: Help docs search for: {query}")
-        import urllib.parse
-        import re
+    """Search Blueshift Help Center using Zendesk API"""
+    print(f"DEBUG: Help docs search for: {query}")
 
-        # Provide smart contextual help articles based on query keywords
-        query_lower = query.lower()
+    # First try the Zendesk Help Center API if credentials are available
+    if ZENDESK_SUBDOMAIN and ZENDESK_TOKEN and ZENDESK_SUBDOMAIN != 'test-subdomain':
+        try:
+            import base64
+            import urllib.parse
 
-        # Smart contextual mapping to known Campaign Optimizer articles
-        if 'optimizer' in query_lower or 'optimization' in query_lower:
-            return [
-                {"title": "Campaign Optimizer Overview", "url": "https://help.blueshift.com/hc/en-us/sections/360008922974-Campaign-Optimizer"},
-                {"title": "A/B Testing and Optimization", "url": "https://help.blueshift.com/hc/en-us/articles/360043384594-Campaign-Optimizer"},
-                {"title": "Campaign Performance Analysis", "url": "https://help.blueshift.com/hc/en-us/articles/campaign-performance"}
-            ]
-        elif 'campaign' in query_lower:
-            return [
-                {"title": "Creating Your First Campaign", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894-Creating-your-first-campaign"},
-                {"title": "Campaign Management", "url": "https://help.blueshift.com/hc/en-us/sections/115000188714-Campaigns"},
-                {"title": "Campaign Optimizer", "url": "https://help.blueshift.com/hc/en-us/sections/360008922974-Campaign-Optimizer"}
-            ]
-        elif 'email' in query_lower:
-            return [
-                {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-                {"title": "Email Templates", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633-Email-templates"},
-                {"title": "Email Personalization", "url": "https://help.blueshift.com/hc/en-us/articles/email-personalization"}
-            ]
-        elif any(word in query_lower for word in ['facebook', 'audience', 'ads']):
-            return [
-                {"title": "Facebook Custom Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754-Facebook-Custom-Audiences"},
-                {"title": "Facebook Ads Integration", "url": "https://help.blueshift.com/hc/en-us/articles/facebook-integration"},
-                {"title": "Social Media Marketing", "url": "https://help.blueshift.com/hc/en-us/articles/social-marketing"}
-            ]
-        elif any(word in query_lower for word in ['api', 'integration', 'webhook']):
-            return [
-                {"title": "REST API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283-Getting-started-with-REST-API"},
-                {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/sections/4405219503635-REST-API"},
-                {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/webhook-setup"}
-            ]
+            # Use Zendesk Help Center Search API
+            search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
 
-        # Default fallback
-        print("DEBUG: Help center search failed, returning fallback")
-        return [
-            {"title": f"Search Help Center: '{query}'", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
-            {"title": "Browse All Help Articles", "url": "https://help.blueshift.com/hc/en-us"},
-            {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
-        ]
+            auth_token = base64.b64encode(f"{ZENDESK_EMAIL}:{ZENDESK_TOKEN}".encode()).decode()
+            headers = {
+                'Authorization': f'Basic {auth_token}',
+                'Content-Type': 'application/json'
+            }
 
-    except Exception as e:
-        print(f"Help docs search error: {e}")
-        return [
-            {"title": f"Help Center Search: {query}", "url": "https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
-            {"title": "Blueshift Documentation", "url": "https://help.blueshift.com/hc/en-us"}
-        ]
+            params = {
+                'query': query,
+                'locale': 'en-us'
+            }
+
+            print(f"DEBUG: Searching Zendesk Help Center API: {search_url}")
+            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                articles = []
+
+                for result in data.get('results', [])[:3]:
+                    articles.append({
+                        'title': result.get('title', 'Help Article'),
+                        'url': result.get('html_url', '#')
+                    })
+                    print(f"DEBUG: Found help article: {result.get('title', 'Untitled')}")
+
+                if articles:
+                    print(f"DEBUG: Zendesk Help Center returned {len(articles)} articles")
+                    return articles
+                else:
+                    print("DEBUG: Zendesk Help Center returned no results")
+            else:
+                print(f"DEBUG: Zendesk Help Center API failed: {response.status_code}")
+
+        except Exception as e:
+            print(f"DEBUG: Zendesk Help Center search error: {e}")
+
+    # Fallback: return search page link
+    print("DEBUG: Using fallback help center search link")
+    import urllib.parse
+    return [
+        {"title": f"Search Help Center for '{query}'", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
+        {"title": "Browse All Help Articles", "url": "https://help.blueshift.com/hc/en-us"},
+        {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+    ]
 
 def generate_related_resources(query):
     """Generate contextually relevant resources by searching actual APIs"""

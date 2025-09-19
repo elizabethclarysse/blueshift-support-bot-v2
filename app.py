@@ -414,41 +414,180 @@ def search_help_docs(query):
         {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
     ]
 
-def generate_related_resources(query):
-    """Generate contextually relevant resources by searching actual APIs"""
-    print(f"Searching for real resources related to: {query}")
+def expand_search_terms(query):
+    """Expand query with Blueshift-specific synonyms and related terms"""
+    print(f"DEBUG: Expanding search terms for: {query}")
 
-    # Search all systems in parallel for better performance
+    query_lower = query.lower()
+    expanded_terms = set([query])
+
+    # Blueshift-specific term mappings
+    term_expansions = {
+        'campaign': ['campaign', 'message', 'email', 'push notification', 'journey', 'automation', 'workflow'],
+        'optimizer': ['optimizer', 'optimization', 'a/b test', 'split test', 'variant', 'experiment', 'test'],
+        'segment': ['segment', 'audience', 'cohort', 'user group', 'customer group', 'filter', 'criteria'],
+        'api': ['api', 'integration', 'webhook', 'endpoint', 'rest api', 'sdk', 'developer', 'code'],
+        'event': ['event', 'tracking', 'trigger', 'activity', 'action', 'behavior', 'interaction'],
+        'attribute': ['attribute', 'property', 'field', 'data', 'profile', 'custom field', 'parameter'],
+        'journey': ['journey', 'workflow', 'automation', 'flow', 'sequence', 'path', 'funnel'],
+        'analytics': ['analytics', 'reporting', 'dashboard', 'metrics', 'data', 'insights', 'performance'],
+        'personalization': ['personalization', 'dynamic content', 'custom', 'individual', 'tailored'],
+        'catalog': ['catalog', 'product', 'recommendation', 'item', 'content', 'feed'],
+        'unsubscribe': ['unsubscribe', 'opt-out', 'suppress', 'blacklist', 'preference center', 'subscription'],
+        'delivery': ['delivery', 'sending', 'deliverability', 'inbox', 'spam', 'bounce', 'reputation'],
+        'template': ['template', 'design', 'layout', 'html', 'content', 'creative', 'format']
+    }
+
+    # Add expanded terms if keywords found
+    for key, expansions in term_expansions.items():
+        if key in query_lower or any(word in query_lower for word in key.split()):
+            expanded_terms.update(expansions[:4])  # Limit to top 4 expansions
+
+    # Add individual significant words (longer than 3 chars)
+    words = [word.strip() for word in query.split() if len(word) > 3]
+    expanded_terms.update(words)
+
+    result = list(expanded_terms)[:10]  # Limit total terms
+    print(f"DEBUG: Expanded to {len(result)} terms: {result}")
+    return result
+
+def score_result_relevance(result, original_query, expanded_terms):
+    """Score how relevant a search result is to the original query"""
+    title = result.get('title', '').lower()
+    original_lower = original_query.lower()
+
+    score = 0
+
+    # High score for exact phrase match in title
+    if original_lower in title:
+        score += 15
+
+    # Score for individual words from original query
+    for word in original_query.split():
+        if len(word) > 2 and word.lower() in title:
+            score += 5
+
+    # Score for expanded terms
+    for term in expanded_terms:
+        if term.lower() in title:
+            score += 2
+
+    # Bonus for specific Blueshift terms
+    blueshift_terms = ['campaign', 'segment', 'journey', 'event', 'api', 'analytics', 'optimizer']
+    for term in blueshift_terms:
+        if term in title:
+            score += 3
+
+    # Penalties for overly generic results
+    generic_penalties = [
+        ('documentation', -8),
+        ('overview', -5),
+        ('introduction', -5),
+        ('getting started', -4),
+        ('help', -3),
+        ('support', -3)
+    ]
+
+    for penalty_term, penalty in generic_penalties:
+        if penalty_term in title and len(title.split()) <= 3:
+            score += penalty
+
+    # Penalty for results that are just the search term
+    if title.strip() == original_lower.strip():
+        score -= 10
+
+    return max(0, score)  # Don't return negative scores
+
+def filter_and_rank_results(results, original_query, expanded_terms, max_results=3):
+    """Filter out irrelevant results and rank by relevance"""
+    if not results:
+        return []
+
+    scored_results = []
+    for result in results:
+        if not result or not result.get('title'):
+            continue
+
+        score = score_result_relevance(result, original_query, expanded_terms)
+        if score > 0:  # Only include results with positive relevance
+            scored_results.append((result, score))
+
+    # Sort by score (highest first) and return top results
+    scored_results.sort(key=lambda x: x[1], reverse=True)
+    return [result for result, score in scored_results[:max_results]]
+
+def generate_related_resources(query):
+    """Generate highly relevant resources using intelligent search and ranking"""
+    print(f"DEBUG: Starting intelligent search for: {query}")
+
+    # Step 1: Expand search terms
+    expanded_terms = expand_search_terms(query)
+
+    # Step 2: Search with multiple term variations
+    all_results = {
+        'help_docs': [],
+        'confluence_docs': [],
+        'jira_tickets': [],
+        'support_tickets': []
+    }
+
+    # Try original query plus top expanded terms
+    queries_to_try = [query] + expanded_terms[:3]
+
     try:
         import concurrent.futures
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            # Submit all searches
-            jira_future = executor.submit(get_jira_tickets, query)
-            zendesk_future = executor.submit(get_zendesk_tickets, query)
-            confluence_future = executor.submit(get_confluence_pages, query)
-            help_future = executor.submit(search_help_docs, query)
+        for search_query in queries_to_try:
+            print(f"DEBUG: Searching with: {search_query}")
 
-            # Get results
-            jira_tickets = jira_future.result()
-            support_tickets = zendesk_future.result()
-            confluence_docs = confluence_future.result()
-            help_docs = help_future.result()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                # Submit searches for this query variant
+                jira_future = executor.submit(get_jira_tickets, search_query)
+                zendesk_future = executor.submit(get_zendesk_tickets, search_query)
+                confluence_future = executor.submit(get_confluence_pages, search_query)
+                help_future = executor.submit(search_help_docs, search_query)
+
+                # Collect results
+                jira_results = jira_future.result() or []
+                support_results = zendesk_future.result() or []
+                confluence_results = confluence_future.result() or []
+                help_results = help_future.result() or []
+
+                # Accumulate unique results (by URL)
+                for result in help_results:
+                    if result and result.get('url') and not any(r.get('url') == result.get('url') for r in all_results['help_docs']):
+                        all_results['help_docs'].append(result)
+
+                for result in confluence_results:
+                    if result and result.get('url') and not any(r.get('url') == result.get('url') for r in all_results['confluence_docs']):
+                        all_results['confluence_docs'].append(result)
+
+                for result in jira_results:
+                    if result and result.get('url') and not any(r.get('url') == result.get('url') for r in all_results['jira_tickets']):
+                        all_results['jira_tickets'].append(result)
+
+                for result in support_results:
+                    if result and result.get('url') and not any(r.get('url') == result.get('url') for r in all_results['support_tickets']):
+                        all_results['support_tickets'].append(result)
 
     except Exception as e:
-        print(f"Parallel search error: {e}")
-        # Fallback to individual searches
-        jira_tickets = get_jira_tickets(query)
-        support_tickets = get_zendesk_tickets(query)
-        confluence_docs = get_confluence_pages(query)
-        help_docs = search_help_docs(query)
+        print(f"DEBUG: Intelligent search error: {e}")
+        # Fallback to simple search
+        all_results = {
+            'help_docs': search_help_docs(query) or [],
+            'confluence_docs': get_confluence_pages(query) or [],
+            'jira_tickets': get_jira_tickets(query) or [],
+            'support_tickets': get_zendesk_tickets(query) or []
+        }
 
-    return {
-        'help_docs': help_docs[:3],
-        'confluence_docs': confluence_docs[:3],
-        'jira_tickets': jira_tickets[:3],
-        'support_tickets': support_tickets[:3]
-    }
+    # Step 3: Filter and rank all results by relevance
+    final_results = {}
+    for category, results in all_results.items():
+        filtered = filter_and_rank_results(results, query, expanded_terms, max_results=3)
+        final_results[category] = filtered
+        print(f"DEBUG: {category}: {len(results)} -> {len(filtered)} relevant results")
+
+    return final_results
 
 def call_anthropic_api(query, conversation_history=None):
     """Call Anthropic Claude API for high-quality responses"""

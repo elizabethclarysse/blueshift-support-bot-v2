@@ -703,9 +703,10 @@ MAIN_TEMPLATE = '''
 
         .response-content {
             line-height: 1.6;
-            color: #000000;
+            color: #000000 !important;
             white-space: pre-line;
-            font-weight: 500;
+            font-weight: bold !important;
+            font-size: 1.1em;
         }
 
         /* INTERACTIVE FOLLOW-UP SECTION */

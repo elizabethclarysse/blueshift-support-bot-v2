@@ -197,9 +197,10 @@ def get_zendesk_tickets(query):
     ]
 
 def get_confluence_pages(query):
-    """Search Confluence for relevant pages using API"""
-    # Check if Confluence credentials are available
+    """Search Confluence for relevant pages using improved API search"""
     print(f"DEBUG: CONFLUENCE_EMAIL={CONFLUENCE_EMAIL}, CONFLUENCE_TOKEN={'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+    print(f"DEBUG: Searching Confluence for: {query}")
+
     if CONFLUENCE_EMAIL and CONFLUENCE_TOKEN:
         try:
             import base64
@@ -214,50 +215,88 @@ def get_confluence_pages(query):
 
             search_url = f"{confluence_url}/rest/api/content/search"
 
-            # Try multiple search strategies
+            # More comprehensive search strategies with better CQL
             search_terms = query.split()
-            search_queries = [
-                f'text ~ "{query}" AND type = page',
-                f'title ~ "{query}" AND type = page',
-                f'({" OR ".join([f"text ~ \"{term}\"" for term in search_terms])}) AND type = page'
-            ]
+            search_queries = []
+
+            # Add different search patterns for better results
+            if len(search_terms) == 1:
+                term = search_terms[0]
+                search_queries = [
+                    f'type = page AND (title ~ "{term}" OR text ~ "{term}")',
+                    f'type = page AND text ~ "*{term}*"',
+                    f'type = page AND title ~ "*{term}*"'
+                ]
+            else:
+                # Multi-word queries
+                full_query = ' '.join(search_terms)
+                search_queries = [
+                    f'type = page AND (title ~ "{full_query}" OR text ~ "{full_query}")',
+                    f'type = page AND ({" AND ".join([f"text ~ \"{term}\"" for term in search_terms])})',
+                    f'type = page AND ({" OR ".join([f"title ~ \"{term}\"" for term in search_terms])})',
+                    f'type = page AND ({" OR ".join([f"text ~ \"{term}\"" for term in search_terms])})'
+                ]
 
             pages = []
-            for cql_query in search_queries:
-                if len(pages) >= 3:
+            for i, cql_query in enumerate(search_queries):
+                if len(pages) >= 5:  # Get more results to have better selection
                     break
 
                 params = {
                     'cql': cql_query,
-                    'limit': 3
+                    'limit': 5,
+                    'expand': 'version,space'
                 }
-                print(f"DEBUG: Confluence CQL: {cql_query}")
+
+                print(f"DEBUG: Confluence CQL Query {i+1}: {cql_query}")
                 response = requests.get(search_url, headers=headers, params=params, timeout=10)
+                print(f"DEBUG: Confluence API response status: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
-                    for page in data.get('results', []):
-                        if len(pages) >= 3:
+                    results = data.get('results', [])
+                    print(f"DEBUG: Found {len(results)} results for query {i+1}")
+
+                    for page in results:
+                        if len(pages) >= 5:
                             break
 
-                        # Less strict relevance check - just add all results from the API
+                        # Add all results from API without filtering
                         page_data = {
                             'title': page.get('title', 'Confluence Page'),
-                            'url': f"{confluence_url}{page['_links']['webui']}"
+                            'url': f"{confluence_url}{page['_links']['webui']}",
+                            'space': page.get('space', {}).get('name', '')
                         }
-                        # Avoid duplicates
-                        if page_data not in pages:
-                            pages.append(page_data)
 
-            return pages[:3]
+                        # Check for duplicates by URL
+                        if not any(existing['url'] == page_data['url'] for existing in pages):
+                            pages.append(page_data)
+                            print(f"DEBUG: Added page: {page_data['title']} from {page_data['space']}")
+
+                    # If we found results with this query, we can stop trying more complex ones
+                    if len(results) > 0:
+                        break
+                else:
+                    print(f"DEBUG: Confluence API error: {response.text}")
+
+            # Return top 3 results, removing the space field for consistency
+            final_pages = []
+            for page in pages[:3]:
+                final_pages.append({
+                    'title': page['title'],
+                    'url': page['url']
+                })
+
+            print(f"DEBUG: Returning {len(final_pages)} Confluence pages")
+            return final_pages
 
         except Exception as e:
-            print(f"Confluence search error: {e}")
+            print(f"DEBUG: Confluence search error: {e}")
 
-    # Fallback to known working page
+    # Fallback - only if no API access
+    print("DEBUG: Using Confluence fallback pages")
     return [
-        {"title": "Campaign Fundamentals Documentation", "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"},
-        {"title": "Customer Engagement Best Practices", "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"}
+        {"title": "Search Confluence", "url": f"{CONFLUENCE_URL}/dosearchsite.action?queryString={query}"}
     ]
 
 def search_help_docs(query):

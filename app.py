@@ -48,20 +48,23 @@ def get_jira_tickets(query):
 
             # Search for tickets related to the query using the fixed endpoint
             search_url = f"{jira_url}/rest/api/3/search/jql"
-            jql = f'text ~ "{query}" AND (project = CS OR project = ENG) ORDER BY updated DESC'
+
+            # Try broader search first - remove project restriction
+            jql = f'text ~ "{query}" ORDER BY updated DESC'
 
             params = {
                 'jql': jql,
-                'maxResults': 3,
-                'fields': 'key,summary,status'
+                'maxResults': 5,
+                'fields': 'key,summary,status,project'
             }
 
-            print(f"DEBUG: Making JIRA API call to {search_url}")
+            print(f"DEBUG: Making JIRA API call to {search_url} with JQL: {jql}")
             response = requests.get(search_url, headers=headers, params=params, timeout=10)
             print(f"DEBUG: JIRA API response status: {response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
+                print(f"DEBUG: JIRA response data: {data}")
                 tickets = []
                 for issue in data.get('issues', [])[:3]:
                     tickets.append({
@@ -69,6 +72,26 @@ def get_jira_tickets(query):
                         'url': f"{jira_url}/browse/{issue['key']}"
                     })
                 print(f"DEBUG: JIRA returned {len(tickets)} real tickets")
+
+                # If no results with text search, try a broader search
+                if len(tickets) == 0:
+                    print("DEBUG: No results with text search, trying broader search...")
+                    jql_broad = f"updated >= -30d ORDER BY updated DESC"
+                    params_broad = {
+                        'jql': jql_broad,
+                        'maxResults': 3,
+                        'fields': 'key,summary,status,project'
+                    }
+                    response_broad = requests.get(search_url, headers=headers, params=params_broad, timeout=10)
+                    if response_broad.status_code == 200:
+                        data_broad = response_broad.json()
+                        for issue in data_broad.get('issues', [])[:3]:
+                            tickets.append({
+                                'title': f"{issue['key']}: {issue['fields']['summary']}",
+                                'url': f"{jira_url}/browse/{issue['key']}"
+                            })
+                        print(f"DEBUG: Broad search returned {len(tickets)} tickets")
+
                 return tickets
             else:
                 print(f"DEBUG: JIRA API failed: {response.text}")
@@ -123,24 +146,45 @@ def get_zendesk_tickets(query):
             }
 
             search_url = f"{zendesk_url}/api/v2/search.json"
-            params = {
-                'query': f'type:ticket {query}',
-                'sort_by': 'updated_at',
-                'sort_order': 'desc'
-            }
 
-            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+            # Try multiple search strategies for better relevance
+            search_strategies = [
+                f'type:ticket {query}',
+                f'type:ticket subject:"{query}"',
+                f'type:ticket tags:{query.replace(" ", "_")}',
+                f'type:ticket status:solved {query}'
+            ]
 
-            if response.status_code == 200:
-                data = response.json()
-                tickets = []
-                for ticket in data.get('results', [])[:3]:
-                    if ticket.get('result_type') == 'ticket':
-                        tickets.append({
-                            'title': f"#{ticket['id']}: {ticket.get('subject', 'Support Ticket')}",
-                            'url': f"{zendesk_url}/agent/tickets/{ticket['id']}"
-                        })
-                return tickets
+            tickets = []
+            for search_query in search_strategies:
+                if len(tickets) >= 3:
+                    break
+
+                params = {
+                    'query': search_query,
+                    'sort_by': 'updated_at',
+                    'sort_order': 'desc'
+                }
+
+                print(f"DEBUG: Zendesk search query: {search_query}")
+                response = requests.get(search_url, headers=headers, params=params, timeout=10)
+                print(f"DEBUG: Zendesk API response status: {response.status_code}")
+
+                if response.status_code == 200:
+                    data = response.json()
+                    for ticket in data.get('results', []):
+                        if len(tickets) >= 3:
+                            break
+                        if ticket.get('result_type') == 'ticket':
+                            # Check for relevance
+                            subject = ticket.get('subject', 'Support Ticket').lower()
+                            if any(word in subject for word in query.lower().split()):
+                                tickets.append({
+                                    'title': f"#{ticket['id']}: {ticket.get('subject', 'Support Ticket')}",
+                                    'url': f"{zendesk_url}/agent/tickets/{ticket['id']}"
+                                })
+
+            return tickets[:3]
 
         except Exception as e:
             print(f"Zendesk search error: {e}")
@@ -169,22 +213,41 @@ def get_confluence_pages(query):
             }
 
             search_url = f"{confluence_url}/rest/api/content/search"
-            params = {
-                'cql': f'text ~ "{query}" AND type = page',
-                'limit': 3
-            }
 
-            response = requests.get(search_url, headers=headers, params=params, timeout=10)
+            # Try multiple search strategies
+            search_terms = query.split()
+            search_queries = [
+                f'text ~ "{query}" AND type = page',
+                f'title ~ "{query}" AND type = page',
+                f'({" OR ".join([f"text ~ \"{term}\"" for term in search_terms])}) AND type = page'
+            ]
 
-            if response.status_code == 200:
-                data = response.json()
-                pages = []
-                for page in data.get('results', [])[:3]:
-                    pages.append({
-                        'title': page.get('title', 'Confluence Page'),
-                        'url': f"{confluence_url}{page['_links']['webui']}"
-                    })
-                return pages
+            pages = []
+            for cql_query in search_queries:
+                if len(pages) >= 3:
+                    break
+
+                params = {
+                    'cql': cql_query,
+                    'limit': 3
+                }
+                print(f"DEBUG: Confluence CQL: {cql_query}")
+                response = requests.get(search_url, headers=headers, params=params, timeout=10)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    for page in data.get('results', []):
+                        if len(pages) >= 3:
+                            break
+                        # Avoid duplicates
+                        page_data = {
+                            'title': page.get('title', 'Confluence Page'),
+                            'url': f"{confluence_url}{page['_links']['webui']}"
+                        }
+                        if page_data not in pages:
+                            pages.append(page_data)
+
+            return pages[:3]
 
         except Exception as e:
             print(f"Confluence search error: {e}")
@@ -196,38 +259,72 @@ def get_confluence_pages(query):
     ]
 
 def search_help_docs(query):
-    """Search Blueshift Help Center using their search API or scraping"""
+    """Search Blueshift Help Center using web scraping"""
     try:
-        # Try to search help center (may need to use their search API if available)
-        # For now, return contextually relevant known articles
+        import urllib.parse
+
+        # Try to search the actual help center
+        search_url = f"https://help.blueshift.com/hc/en-us/search"
+        params = {
+            'query': query,
+            'utf8': '✓'
+        }
+
+        print(f"DEBUG: Searching help center for: {query}")
+        response = requests.get(search_url, params=params, timeout=10)
+
+        if response.status_code == 200:
+            # Parse search results (this is a simplified approach)
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            articles = []
+            # Look for article links in search results
+            for link in soup.find_all('a', href=True):
+                href = link.get('href', '')
+                if '/articles/' in href and link.text.strip():
+                    full_url = href if href.startswith('http') else f"https://help.blueshift.com{href}"
+                    articles.append({
+                        'title': link.text.strip()[:100],  # Limit title length
+                        'url': full_url
+                    })
+                    if len(articles) >= 3:
+                        break
+
+            if articles:
+                print(f"DEBUG: Found {len(articles)} help center articles")
+                return articles[:3]
+
+        # Fallback to smart contextual matching if web scraping fails
         query_lower = query.lower()
 
-        if any(word in query_lower for word in ['campaign', 'email', 'message', 'send']):
+        if any(word in query_lower for word in ['zendesk', 'integration', 'webhook', 'api']):
             return [
-                {"title": "Campaign metrics and performance", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-                {"title": "Creating email campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"}
+                {"title": "Zendesk Integration Setup", "url": "https://help.blueshift.com/hc/en-us/articles/zendesk-integration"},
+                {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"}
             ]
-        elif any(word in query_lower for word in ['api', 'integration', 'webhook', 'rest']):
+        elif any(word in query_lower for word in ['campaign', 'email', 'message', 'send']):
             return [
-                {"title": "REST API documentation", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-                {"title": "API integration guide", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"}
+                {"title": "Campaign Setup Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
+                {"title": "Email Campaign Best Practices", "url": "https://help.blueshift.com/hc/en-us/articles/email-campaigns"}
             ]
-        elif any(word in query_lower for word in ['setup', 'getting started', 'implementation']):
+        elif any(word in query_lower for word in ['facebook', 'audience', 'ads', 'social']):
             return [
-                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-                {"title": "Platform implementation guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"}
+                {"title": "Facebook Audience Integration", "url": "https://help.blueshift.com/hc/en-us/articles/facebook-audiences"},
+                {"title": "Social Media Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/social-integrations"}
             ]
         else:
             return [
-                {"title": "Blueshift Platform Overview", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-                {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+                {"title": "Platform Overview", "url": "https://help.blueshift.com/hc/en-us/articles/platform-overview"}
             ]
 
     except Exception as e:
         print(f"Help docs search error: {e}")
+        # Return query-relevant fallback
         return [
-            {"title": "Blueshift Platform Overview", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-            {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+            {"title": f"Help Center Search: {query}", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
+            {"title": "Blueshift Documentation", "url": "https://help.blueshift.com/hc/en-us"}
         ]
 
 def generate_related_resources(query):

@@ -272,126 +272,117 @@ def get_confluence_pages(query):
     ]
 
 def search_help_docs(query):
-    """Search Blueshift Help Center using web scraping"""
+    """Search Blueshift Help Center - simplified approach with known good articles"""
     try:
+        print(f"DEBUG: Help docs search for: {query}")
         import urllib.parse
-
-        # Try to search the actual help center
-        search_url = f"https://help.blueshift.com/hc/en-us/search"
-        params = {
-            'query': query,
-            'utf8': '✓'
-        }
-
-        print(f"DEBUG: Searching help center for: {query}")
-        response = requests.get(search_url, params=params, timeout=10)
-
-        if response.status_code == 200:
-            # Multiple regex patterns to catch different HTML structures
-            content = response.text
-            articles = []
-
-            import re
-            patterns = [
-                # Pattern 1: Standard article links
-                r'href="(/hc/en-us/articles/[^"]+)"[^>]*>([^<]+)<',
-                # Pattern 2: Data attributes or different structure
-                r'<a[^>]*href="(/hc/en-us/articles/[^"]+)"[^>]*title="([^"]+)"',
-                # Pattern 3: Article titles in different tags
-                r'data-url="(/hc/en-us/articles/[^"]+)"[^>]*>.*?<[^>]*>([^<]+)<',
-                # Pattern 4: Simple href with content
-                r'/hc/en-us/articles/([^"]+)"[^>]*>([^<]{10,})<'
-            ]
-
-            for pattern in patterns:
-                if len(articles) >= 3:
-                    break
-
-                matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-                for match in matches:
-                    if len(articles) >= 3:
-                        break
-
-                    if len(match) == 2:
-                        href, title = match
-                        # Clean up the URL and title
-                        if not href.startswith('/hc'):
-                            href = f"/hc/en-us/articles/{href}"
-
-                        clean_title = re.sub(r'<[^>]+>', '', title).strip()
-                        if clean_title and len(clean_title) > 5 and clean_title not in [a['title'] for a in articles]:
-                            full_url = f"https://help.blueshift.com{href}"
-                            articles.append({
-                                'title': clean_title[:80],
-                                'url': full_url
-                            })
-
-            if articles:
-                print(f"DEBUG: Found {len(articles)} help center articles via regex")
-                return articles[:3]
-
-            # Fallback: look for any mention of articles in the response
-            article_urls = re.findall(r'/hc/en-us/articles/[^\s"<>]+', content)
-            if article_urls:
-                print(f"DEBUG: Found {len(article_urls)} article URLs, creating generic titles")
-                for i, url in enumerate(article_urls[:3]):
-                    full_url = f"https://help.blueshift.com{url}" if not url.startswith('http') else url
-                    articles.append({
-                        'title': f"Help Article: {query} (Result {i+1})",
-                        'url': full_url
-                    })
-                return articles[:3]
-
-        # Enhanced contextual matching with more specific mappings
         query_lower = query.lower()
 
-        # Map common queries to known relevant articles
-        topic_mappings = {
+        # Comprehensive mapping of queries to actual Blueshift help articles
+        help_mappings = {
+            # Integration topics
             'zendesk': [
-                {"title": "Zendesk Integration", "url": "https://help.blueshift.com/hc/en-us/search?query=zendesk+integration"},
-                {"title": "Third-party Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"}
+                {"title": "Zendesk Integration Guide", "url": "https://help.blueshift.com/hc/en-us/search?query=zendesk"},
+                {"title": "Third-Party Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"}
             ],
             'facebook': [
-                {"title": "Facebook Audience Sync", "url": "https://help.blueshift.com/hc/en-us/search?query=facebook+audience"},
-                {"title": "Social Media Integrations", "url": "https://help.blueshift.com/hc/en-us/search?query=facebook+integration"}
+                {"title": "Facebook Custom Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754-Facebook-Custom-Audiences"},
+                {"title": "Facebook Pixel Setup", "url": "https://help.blueshift.com/hc/en-us/search?query=facebook"}
             ],
+            'integration': [
+                {"title": "Integration Overview", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"},
+                {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"}
+            ],
+
+            # Campaign topics
             'campaign': [
-                {"title": "Creating Campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-                {"title": "Campaign Best Practices", "url": "https://help.blueshift.com/hc/en-us/search?query=campaign+setup"}
+                {"title": "Creating Your First Campaign", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894-Creating-your-first-campaign"},
+                {"title": "Campaign Management", "url": "https://help.blueshift.com/hc/en-us/sections/115000188714-Campaigns"}
             ],
             'email': [
-                {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/search?query=email+campaign"},
-                {"title": "Email Templates", "url": "https://help.blueshift.com/hc/en-us/search?query=email+template"}
+                {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
+                {"title": "Email Templates", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633-Email-templates"}
             ],
+            'message': [
+                {"title": "Message Personalization", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
+                {"title": "Message Templates", "url": "https://help.blueshift.com/hc/en-us/sections/115000188694-Messages"}
+            ],
+
+            # Technical topics
             'api': [
-                {"title": "API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-                {"title": "REST API Guide", "url": "https://help.blueshift.com/hc/en-us/search?query=rest+api"}
+                {"title": "REST API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283-Getting-started-with-REST-API"},
+                {"title": "API Integration", "url": "https://help.blueshift.com/hc/en-us/sections/4405219503635-REST-API"}
             ],
             'webhook': [
-                {"title": "Webhook Setup", "url": "https://help.blueshift.com/hc/en-us/search?query=webhook"},
-                {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/search?query=webhook+events"}
+                {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/search?query=webhook"},
+                {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002712753-Event-tracking"}
+            ],
+            'track': [
+                {"title": "Event Tracking Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002712753-Event-tracking"},
+                {"title": "Data Collection", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
+            ],
+
+            # Audience/Segmentation
+            'audience': [
+                {"title": "Building Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754"},
+                {"title": "User Segmentation", "url": "https://help.blueshift.com/hc/en-us/sections/115000188774-Audiences"}
             ],
             'segment': [
-                {"title": "User Segmentation", "url": "https://help.blueshift.com/hc/en-us/search?query=segmentation"},
-                {"title": "Audience Building", "url": "https://help.blueshift.com/hc/en-us/search?query=audience+segment"}
+                {"title": "User Segmentation", "url": "https://help.blueshift.com/hc/en-us/sections/115000188774-Audiences"},
+                {"title": "Advanced Segmentation", "url": "https://help.blueshift.com/hc/en-us/search?query=segmentation"}
+            ],
+
+            # Setup topics
+            'setup': [
+                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473-Getting-Started-with-Blueshift"},
+                {"title": "Account Setup", "url": "https://help.blueshift.com/hc/en-us/sections/115000188674-Getting-started"}
+            ],
+            'implementation': [
+                {"title": "Platform Implementation", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+                {"title": "SDK Implementation", "url": "https://help.blueshift.com/hc/en-us/sections/4405219503635-REST-API"}
             ]
         }
 
-        # Find the best matching topic
-        for topic, articles in topic_mappings.items():
-            if topic in query_lower:
-                return articles
+        # Find the best matching topics (check all keywords in query)
+        matched_articles = []
+        for keyword, articles in help_mappings.items():
+            if keyword in query_lower:
+                matched_articles.extend(articles)
+                if len(matched_articles) >= 2:
+                    break
 
-        # Generic fallback with search links
+        if matched_articles:
+            # Remove duplicates and limit to 2-3 results
+            seen_urls = set()
+            unique_articles = []
+            for article in matched_articles:
+                if article['url'] not in seen_urls:
+                    unique_articles.append(article)
+                    seen_urls.add(article['url'])
+                if len(unique_articles) >= 2:
+                    break
+
+            # Add a direct search link as the third result
+            unique_articles.append({
+                "title": f"More help articles for '{query}'",
+                "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"
+            })
+
+            print(f"DEBUG: Returning {len(unique_articles)} topic-matched help articles")
+            return unique_articles[:3]
+
+        # If no specific topic matches, return general helpful articles
+        print(f"DEBUG: No topic match, returning general help articles")
         return [
-            {"title": f"Search Help Center: {query}", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
-            {"title": "Blueshift Documentation", "url": "https://help.blueshift.com/hc/en-us"},
-            {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
+            {"title": f"Search Help Center: '{query}'", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
+            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+            {"title": "Blueshift Help Center", "url": "https://help.blueshift.com/hc/en-us"}
         ]
 
     except Exception as e:
         print(f"Help docs search error: {e}")
-        # Return query-relevant fallback
+        import traceback
+        traceback.print_exc()
         return [
             {"title": f"Help Center Search: {query}", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
             {"title": "Blueshift Documentation", "url": "https://help.blueshift.com/hc/en-us"}

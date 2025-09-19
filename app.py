@@ -606,9 +606,9 @@ MAIN_TEMPLATE = '''
 
         .response-content {
             line-height: 1.6;
-            color: #333333 !important;
+            color: #555555 !important;
             white-space: pre-line;
-            font-weight: 600 !important;
+            font-weight: 500 !important;
             font-size: 1.05em;
         }
 

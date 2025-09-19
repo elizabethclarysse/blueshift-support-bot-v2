@@ -703,7 +703,7 @@ MAIN_TEMPLATE = '''
 
         .response-content {
             line-height: 1.6;
-            color: #555;
+            color: #222;
             white-space: pre-line;
         }
 

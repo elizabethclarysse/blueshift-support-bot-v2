@@ -239,13 +239,26 @@ def get_confluence_pages(query):
                     for page in data.get('results', []):
                         if len(pages) >= 3:
                             break
-                        # Avoid duplicates
-                        page_data = {
-                            'title': page.get('title', 'Confluence Page'),
-                            'url': f"{confluence_url}{page['_links']['webui']}"
-                        }
-                        if page_data not in pages:
-                            pages.append(page_data)
+
+                        # Check relevance - title or excerpt should contain query terms
+                        title = page.get('title', 'Confluence Page').lower()
+                        excerpt = page.get('excerpt', '').lower()
+                        query_terms = [term.lower() for term in query.split()]
+
+                        # Check if any query term appears in title or excerpt
+                        is_relevant = any(
+                            term in title or term in excerpt
+                            for term in query_terms
+                        )
+
+                        if is_relevant:
+                            page_data = {
+                                'title': page.get('title', 'Confluence Page'),
+                                'url': f"{confluence_url}{page['_links']['webui']}"
+                            }
+                            # Avoid duplicates
+                            if page_data not in pages:
+                                pages.append(page_data)
 
             return pages[:3]
 
@@ -274,18 +287,20 @@ def search_help_docs(query):
         response = requests.get(search_url, params=params, timeout=10)
 
         if response.status_code == 200:
-            # Parse search results (this is a simplified approach)
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
-
+            # Simple text parsing instead of BeautifulSoup
+            content = response.text
             articles = []
-            # Look for article links in search results
-            for link in soup.find_all('a', href=True):
-                href = link.get('href', '')
-                if '/articles/' in href and link.text.strip():
-                    full_url = href if href.startswith('http') else f"https://help.blueshift.com{href}"
+
+            # Look for article links in the HTML content
+            import re
+            article_pattern = r'href="(/hc/en-us/articles/[^"]+)"[^>]*>([^<]+)'
+            matches = re.findall(article_pattern, content)
+
+            for href, title in matches:
+                if title.strip() and len(title.strip()) > 3:
+                    full_url = f"https://help.blueshift.com{href}"
                     articles.append({
-                        'title': link.text.strip()[:100],  # Limit title length
+                        'title': title.strip()[:80],  # Limit title length
                         'url': full_url
                     })
                     if len(articles) >= 3:

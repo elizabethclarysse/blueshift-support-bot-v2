@@ -272,119 +272,22 @@ def get_confluence_pages(query):
     ]
 
 def search_help_docs(query):
-    """Search Blueshift Help Center - simplified approach with known good articles"""
+    """Search Blueshift Help Center - direct search approach"""
     try:
         print(f"DEBUG: Help docs search for: {query}")
         import urllib.parse
-        query_lower = query.lower()
 
-        # Comprehensive mapping of queries to actual Blueshift help articles
-        help_mappings = {
-            # Integration topics - more specific
-            'zendesk': [
-                {"title": "Setting up Zendesk Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214-Setting-up-integrations"},
-                {"title": "Zendesk Data Import", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
-            ],
-            'facebook': [
-                {"title": "Facebook Custom Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754-Facebook-Custom-Audiences"},
-                {"title": "Facebook Ads Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214"}
-            ],
-            'integration': [
-                {"title": "Third-Party Integrations", "url": "https://help.blueshift.com/hc/en-us/articles/360043384214-Setting-up-integrations"},
-                {"title": "Data Integration Guide", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
-            ],
-
-            # Campaign topics
-            'campaign': [
-                {"title": "Creating Your First Campaign", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894-Creating-your-first-campaign"},
-                {"title": "Campaign Management", "url": "https://help.blueshift.com/hc/en-us/sections/115000188714-Campaigns"}
-            ],
-            'email': [
-                {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-                {"title": "Email Templates", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633-Email-templates"}
-            ],
-            'message': [
-                {"title": "Message Personalization", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-                {"title": "Message Templates", "url": "https://help.blueshift.com/hc/en-us/sections/115000188694-Messages"}
-            ],
-
-            # Technical topics
-            'api': [
-                {"title": "REST API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283-Getting-started-with-REST-API"},
-                {"title": "API Integration", "url": "https://help.blueshift.com/hc/en-us/sections/4405219503635-REST-API"}
-            ],
-            'webhook': [
-                {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/search?query=webhook"},
-                {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002712753-Event-tracking"}
-            ],
-            'track': [
-                {"title": "Event Tracking Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002712753-Event-tracking"},
-                {"title": "Data Collection", "url": "https://help.blueshift.com/hc/en-us/sections/115000188754-Data-collection"}
-            ],
-
-            # Audience/Segmentation
-            'audience': [
-                {"title": "Building Audiences", "url": "https://help.blueshift.com/hc/en-us/articles/360043384754"},
-                {"title": "User Segmentation", "url": "https://help.blueshift.com/hc/en-us/sections/115000188774-Audiences"}
-            ],
-            'segment': [
-                {"title": "User Segmentation", "url": "https://help.blueshift.com/hc/en-us/sections/115000188774-Audiences"},
-                {"title": "Advanced Segmentation", "url": "https://help.blueshift.com/hc/en-us/search?query=segmentation"}
-            ],
-
-            # Setup topics
-            'setup': [
-                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473-Getting-Started-with-Blueshift"},
-                {"title": "Account Setup", "url": "https://help.blueshift.com/hc/en-us/sections/115000188674-Getting-started"}
-            ],
-            'implementation': [
-                {"title": "Platform Implementation", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-                {"title": "SDK Implementation", "url": "https://help.blueshift.com/hc/en-us/sections/4405219503635-REST-API"}
-            ]
-        }
-
-        # Find the best matching topics (check all keywords in query)
-        matched_articles = []
-        for keyword, articles in help_mappings.items():
-            if keyword in query_lower:
-                matched_articles.extend(articles)
-                if len(matched_articles) >= 2:
-                    break
-
-        if matched_articles:
-            # Remove duplicates and limit to 2-3 results
-            seen_urls = set()
-            unique_articles = []
-            for article in matched_articles:
-                if article['url'] not in seen_urls:
-                    unique_articles.append(article)
-                    seen_urls.add(article['url'])
-                if len(unique_articles) >= 2:
-                    break
-
-            # Add a direct search link as the third result
-            unique_articles.append({
-                "title": f"More help articles for '{query}'",
-                "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"
-            })
-
-            print(f"DEBUG: Returning {len(unique_articles)} topic-matched help articles")
-            return unique_articles[:3]
-
-        # If no specific topic matches, return general helpful articles
-        print(f"DEBUG: No topic match, returning general help articles")
+        # Always return direct search links - no hardcoded mappings
         return [
             {"title": f"Search Help Center: '{query}'", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
-            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Blueshift Help Center", "url": "https://help.blueshift.com/hc/en-us"}
+            {"title": "Browse All Help Articles", "url": "https://help.blueshift.com/hc/en-us"},
+            {"title": "Getting Started Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"}
         ]
 
     except Exception as e:
         print(f"Help docs search error: {e}")
-        import traceback
-        traceback.print_exc()
         return [
-            {"title": f"Help Center Search: {query}", "url": f"https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
+            {"title": f"Help Center Search: {query}", "url": "https://help.blueshift.com/hc/en-us/search?query={urllib.parse.quote(query)}"},
             {"title": "Blueshift Documentation", "url": "https://help.blueshift.com/hc/en-us"}
         ]
 
@@ -703,10 +606,10 @@ MAIN_TEMPLATE = '''
 
         .response-content {
             line-height: 1.6;
-            color: #000000 !important;
+            color: #333333 !important;
             white-space: pre-line;
-            font-weight: bold !important;
-            font-size: 1.1em;
+            font-weight: 600 !important;
+            font-size: 1.05em;
         }
 
         /* INTERACTIVE FOLLOW-UP SECTION */

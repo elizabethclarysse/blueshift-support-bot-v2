@@ -8,7 +8,7 @@ import time
 
 app = Flask(__name__)
 
-# AI API for intelligent responses
+# Use the correct Claude API key
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
 # AWS Athena configuration - set these via environment variables
@@ -20,12 +20,12 @@ def call_anthropic_api(query):
     """Call Anthropic Claude API for high-quality responses"""
     try:
         headers = {
-            'x-api-key': ANTHROPIC_API_KEY,
+            'x-api-key': AI_API_KEY,
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift Customer Success expert. Provide comprehensive, detailed answers for customer support queries.
+        prompt = f"""You are a Blueshift expert. Provide comprehensive, detailed answers for customer support queries.
 
 {query}
 
@@ -211,7 +211,7 @@ def generate_athena_insights(user_query):
     try:
         # Use AI to determine what kind of data query would be helpful
         headers = {
-            'x-api-key': ANTHROPIC_API_KEY,
+            'x-api-key': AI_API_KEY,
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01'
         }

@@ -205,15 +205,41 @@ def search_confluence_docs(query, limit=3):
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")
 
-                # Construct URL using _links if available (more reliable)
+                # Debug: log all available fields to understand the response structure
+                logger.info(f"Confluence result fields: {list(result.keys())}")
+                if '_links' in result:
+                    logger.info(f"Available links: {result['_links'].keys()}")
+
+                # Try multiple URL construction methods
+                full_url = None
+
+                # Method 1: Use _links.webui (most reliable)
                 web_link = result.get('_links', {}).get('webui', '')
                 if web_link:
                     full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
+                    logger.info(f"Using webui link: {full_url}")
+
+                # Method 2: Use _links.base + _links.self
+                elif result.get('_links', {}).get('base') and result.get('_links', {}).get('self'):
+                    base_url = result['_links']['base']
+                    self_path = result['_links']['self']
+                    full_url = f"{base_url}{self_path}"
+                    logger.info(f"Using base + self: {full_url}")
+
+                # Method 3: Construct from space and page ID
                 elif space_key and page_id:
-                    # Fallback to constructed URL
                     full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+                    logger.info(f"Using constructed URL: {full_url}")
+
+                # Method 4: Just use the title in a search URL (fallback)
                 else:
-                    logger.warning(f"Skipping Confluence result '{title}' - no valid URL available")
+                    # Create a search URL as last resort
+                    encoded_title = title.replace(' ', '+').replace('?', '')
+                    full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+                    logger.info(f"Using search fallback: {full_url}")
+
+                if not full_url:
+                    logger.warning(f"Could not construct URL for Confluence result '{title}'")
                     continue
 
                 scored_results.append({

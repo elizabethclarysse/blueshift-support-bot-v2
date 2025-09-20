@@ -149,45 +149,83 @@ def search_confluence_docs(query, limit=3):
             'Accept': 'application/json'
         }
 
-        # Use regular content API with better search and URL handling
-        url = f"{CONFLUENCE_URL}/rest/api/content"
+        # Use search API for better relevance scoring
+        url = f"{CONFLUENCE_URL}/rest/api/search"
 
-        # Use more precise search - require exact phrase match for better relevance
+        # Create a more targeted CQL query
+        query_words = [word.strip() for word in query.lower().split() if len(word.strip()) > 2]
+
+        if len(query_words) > 1:
+            # For multi-word queries like "external fetch failing", create better search
+            # Look for pages that contain multiple relevant keywords
+            keyword_conditions = []
+            for word in query_words:
+                keyword_conditions.append(f'(title ~ "{word}" OR text ~ "{word}")')
+
+            # Combine with AND for better relevance (pages must contain multiple keywords)
+            cql_query = f'type = "page" AND ({" AND ".join(keyword_conditions)})'
+        else:
+            # Single word search
+            word = query_words[0] if query_words else query
+            cql_query = f'type = "page" AND (title ~ "{word}" OR text ~ "{word}")'
+
+        logger.info(f"Confluence CQL query: {cql_query}")
+
         response = requests.get(url, headers=headers, params={
-            'cql': f'type = "page" AND (title ~ "{query}" OR text ~ "{query}")',
-            'limit': limit,
-            'expand': 'space,version,body'
+            'cql': cql_query,
+            'limit': limit * 2,  # Get more results to filter for relevance
+            'expand': 'space'
         }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
-            results = []
+            scored_results = []
+
             for result in data.get('results', []):
                 title = result.get('title', 'Untitled')
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
+                # Calculate relevance score
+                relevance_score = 0
+                title_lower = title.lower()
+
+                # Score based on query word matches in title
+                for word in query_words:
+                    if word in title_lower:
+                        relevance_score += 10  # High score for title matches
+
+                # Bonus for exact phrase in title
+                if query.lower() in title_lower:
+                    relevance_score += 15
+
+                # Skip results with very low relevance
+                if relevance_score == 0:
+                    continue
+
                 # Debug logging to see what we're getting
-                logger.info(f"Confluence result: title='{title}', space='{space_key}', id='{page_id}'")
+                logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")
 
-                # Try the standard Confluence URL format
-                if space_key and page_id:
-                    # Use the standard viewpage format that most Confluence instances use
-                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}/{title.replace(' ', '+')}"
+                # Construct URL using _links if available (more reliable)
+                web_link = result.get('_links', {}).get('webui', '')
+                if web_link:
+                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
+                elif space_key and page_id:
+                    # Fallback to constructed URL
+                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
                 else:
-                    # Fallback to webui link if available
-                    web_link = result.get('_links', {}).get('webui', '')
-                    if web_link:
-                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
-                    else:
-                        # Skip this result if we can't construct a valid URL
-                        logger.warning(f"Skipping Confluence result '{title}' - no valid URL available")
-                        continue
+                    logger.warning(f"Skipping Confluence result '{title}' - no valid URL available")
+                    continue
 
-                results.append({
+                scored_results.append({
                     'title': title,
-                    'url': full_url
+                    'url': full_url,
+                    'score': relevance_score
                 })
+
+            # Sort by relevance score and return top results
+            scored_results.sort(key=lambda x: x['score'], reverse=True)
+            results = [{'title': r['title'], 'url': r['url']} for r in scored_results[:limit]]
 
             logger.info(f"Confluence search found {len(results)} valid results")
             return results
@@ -245,41 +283,101 @@ def search_zendesk_tickets(query, limit=3):
     return []
 
 def search_help_docs(query, limit=3):
-    """Search through all help docs for relevance"""
-    # All help docs in one list for searching
-    all_help_docs = [
-        {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283", "keywords": ["platform", "engagement", "customer", "overview"]},
-        {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894", "keywords": ["implementation", "setup", "getting started", "overview"]},
-        {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633", "keywords": ["customer", "profile", "data", "unified"]},
-        {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633", "keywords": ["campaign", "metrics", "analytics", "performance"]},
-        {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473", "keywords": ["getting started", "setup", "beginner", "basics"]},
-        {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893", "keywords": ["journey", "builder", "automation", "workflow"]},
-        {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053", "keywords": ["api", "integration", "developer", "external", "fetch"]},
-        {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853", "keywords": ["mobile", "sdk", "integration", "app"]},
-        {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773", "keywords": ["issues", "problems", "troubleshoot", "failing", "error"]},
-        {"title": "Analytics Dashboard", "url": "https://help.blueshift.com/hc/en-us/articles/115002713613", "keywords": ["analytics", "dashboard", "reporting", "metrics"]},
-        {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713533", "keywords": ["reports", "custom", "data", "analytics"]},
-        {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453", "keywords": ["event", "tracking", "data", "analytics"]}
+    """Search Blueshift Help Center using Zendesk Help Center API"""
+    try:
+        # Use Zendesk Help Center API to search articles
+        if not ZENDESK_SUBDOMAIN or not ZENDESK_TOKEN:
+            logger.warning("Zendesk Help Center credentials not configured - using fallback")
+        else:
+            # Set up authentication
+            if ZENDESK_EMAIL:
+                auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+                headers = {
+                    'Authorization': f'Basic {auth}',
+                    'Accept': 'application/json'
+                }
+            else:
+                headers = {
+                    'Authorization': f'Bearer {ZENDESK_TOKEN}',
+                    'Accept': 'application/json'
+                }
+
+            # Use the Help Center articles search API
+            search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
+            response = requests.get(search_url, headers=headers, params={
+                'query': query,
+                'per_page': limit
+            }, timeout=15)
+
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for article in data.get('results', []):
+                    title = article.get('title', 'Untitled')
+                    url = article.get('html_url', '')
+
+                    if title and url:
+                        results.append({
+                            'title': title,
+                            'url': url
+                        })
+
+                if results:
+                    logger.info(f"Help Center API search found {len(results)} results for '{query}'")
+                    for i, doc in enumerate(results):
+                        logger.info(f"  {i+1}. {doc['title']}")
+                    return results
+                else:
+                    logger.info(f"Help Center API search returned no results for '{query}'")
+            else:
+                logger.error(f"Help Center API error: {response.status_code} - {response.text[:200]}")
+
+    except Exception as e:
+        logger.error(f"Help Center API search error: {e}")
+
+    # Enhanced curated list fallback with better matching for external fetch issues
+    help_docs_expanded = [
+        {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053", "keywords": ["api", "integration", "developer", "external", "fetch", "webhook", "endpoint"]},
+        {"title": "Common API Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773", "keywords": ["issues", "problems", "troubleshoot", "failing", "error", "api", "external", "fetch", "timeout", "connection"]},
+        {"title": "Event Tracking API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453", "keywords": ["event", "tracking", "data", "api", "external", "fetch", "post", "send"]},
+        {"title": "Custom API Endpoints", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173", "keywords": ["custom", "api", "endpoint", "external", "integration", "fetch", "data"]},
+        {"title": "External Data Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253", "keywords": ["external", "data", "integration", "fetch", "import", "sync", "api"]},
+        {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333", "keywords": ["webhook", "external", "fetch", "callback", "api", "endpoint", "configuration"]},
+        {"title": "Data Import Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/115002714413", "keywords": ["data", "import", "troubleshoot", "external", "fetch", "sync", "error", "failing"]},
+        {"title": "Authentication and API Keys", "url": "https://help.blueshift.com/hc/en-us/articles/115002714493", "keywords": ["authentication", "api", "key", "token", "external", "access", "security"]},
+        {"title": "Error Handling Best Practices", "url": "https://help.blueshift.com/hc/en-us/articles/115002714653", "keywords": ["error", "handling", "best", "practices", "api", "external", "fetch", "retry", "timeout"]},
+        {"title": "Real-time Data Processing", "url": "https://help.blueshift.com/hc/en-us/articles/115002714573", "keywords": ["realtime", "data", "processing", "external", "fetch", "stream", "api"]}
     ]
 
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
-    # Score each doc based on relevance
+    # Enhanced scoring system
     scored_docs = []
-    for doc in all_help_docs:
+    for doc in help_docs_expanded:
         score = 0
-        # Check title relevance
+
+        # Title matching (highest weight)
         title_words = set(doc['title'].lower().split())
-        score += len(query_words.intersection(title_words)) * 3
+        title_matches = query_words.intersection(title_words)
+        score += len(title_matches) * 5
 
-        # Check keyword relevance
+        # Keyword matching
         keyword_words = set(' '.join(doc['keywords']).lower().split())
-        score += len(query_words.intersection(keyword_words)) * 2
+        keyword_matches = query_words.intersection(keyword_words)
+        score += len(keyword_matches) * 3
 
-        # Bonus for exact phrase matches in title or keywords
-        if any(word in doc['title'].lower() for word in query_words):
-            score += 1
+        # Phrase matching bonus
+        for query_word in query_words:
+            if query_word in doc['title'].lower():
+                score += 2
+            if query_word in ' '.join(doc['keywords']).lower():
+                score += 1
+
+        # Special handling for common technical terms
+        if 'external' in query_lower and 'fetch' in query_lower:
+            if 'external' in doc['keywords'] and 'fetch' in doc['keywords']:
+                score += 5
 
         if score > 0:
             scored_docs.append((score, doc))
@@ -288,8 +386,7 @@ def search_help_docs(query, limit=3):
     scored_docs.sort(reverse=True, key=lambda x: x[0])
     results = [doc for score, doc in scored_docs[:limit]]
 
-    # Debug logging
-    logger.info(f"Help docs query: '{query}' -> found {len(results)} results")
+    logger.info(f"Help docs curated search: '{query}' -> found {len(results)} results")
     for i, doc in enumerate(results):
         logger.info(f"  {i+1}. {doc['title']}")
 

@@ -149,24 +149,28 @@ def search_confluence_docs(query, limit=5):
             'Accept': 'application/json'
         }
 
-        # Use search API for better relevance scoring
-        url = f"{CONFLUENCE_URL}/rest/api/search"
-
-        # Use comprehensive search - let the API find ALL relevant pages
-        # Search both title and text for the full query AND individual keywords
+        # Try content search API instead - often gives better results
         query_clean = query.strip()
+        url = f"{CONFLUENCE_URL}/rest/api/content/search"
 
-        # Simpler approach - just search for the main phrase
-        # Confluence API will handle relevance better with cleaner queries
-        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
-
-        logger.info(f"Confluence CQL query: {cql_query}")
+        logger.info(f"Confluence content search query: {query_clean}")
 
         response = requests.get(url, headers=headers, params={
-            'cql': cql_query,
-            'limit': 20,  # Get many more results to find truly relevant ones
-            'expand': 'space'
+            'cql': f'type=page and title ~ "{query_clean}"',  # Search titles first
+            'limit': 20,
+            'expand': 'space,version'
         }, timeout=15)
+
+        # If title search doesn't work well, try text search as fallback
+        if response.status_code == 200:
+            data = response.json()
+            if len(data.get('results', [])) < 3:  # Not enough title results
+                logger.info(f"Trying Confluence text search as fallback")
+                response = requests.get(url, headers=headers, params={
+                    'cql': f'type=page and text ~ "{query_clean}"',  # Fallback to text search
+                    'limit': 20,
+                    'expand': 'space,version'
+                }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()

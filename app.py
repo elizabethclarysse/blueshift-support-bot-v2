@@ -156,22 +156,9 @@ def search_confluence_docs(query, limit=5):
         # Search both title and text for the full query AND individual keywords
         query_clean = query.strip()
 
-        # Build a comprehensive CQL query that searches broadly
-        search_conditions = []
-
-        # Search for the exact phrase first
-        search_conditions.append(f'title ~ "{query_clean}"')
-        search_conditions.append(f'text ~ "{query_clean}"')
-
-        # Also search for individual important keywords
-        keywords = query_clean.lower().split()
-        for keyword in keywords:
-            if len(keyword.strip()) > 2:  # Skip very short words
-                search_conditions.append(f'title ~ "{keyword.strip()}"')
-                search_conditions.append(f'text ~ "{keyword.strip()}"')
-
-        # Use OR to get maximum coverage - let relevance scoring handle ranking
-        cql_query = f'type = "page" AND ({" OR ".join(search_conditions)})'
+        # Simpler approach - just search for the main phrase
+        # Confluence API will handle relevance better with cleaner queries
+        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
 
         logger.info(f"Confluence CQL query: {cql_query}")
 
@@ -207,14 +194,8 @@ def search_confluence_docs(query, limit=5):
                 title_word_matches = sum(1 for word in query_words if len(word) > 2 and word in title_lower)
                 relevance_score += title_word_matches * 20
 
-                # Filter out clearly irrelevant results but be less restrictive
-                # Only include if title has some query relevance OR decent API score
-                has_title_relevance = query_lower in title_lower or title_word_matches > 0
-                has_decent_api_score = api_score > 10  # Lower threshold - trust Confluence more
-
-                # If no title relevance and very low API score, it's probably garbage
-                if not has_title_relevance and api_score < 5:
-                    continue  # Skip this result as likely irrelevant
+                # No filtering - just sort by relevance to put best results first
+                # Let the sorting handle relevance instead of filtering
 
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")

@@ -86,52 +86,52 @@ def generate_related_resources(query):
     # Select help docs (simplified selection for exact copy)
     selected_help_docs = all_help_docs['platform'][:3]
 
-    # Confluence docs
+    # Confluence docs - real pages
     confluence_docs = [
         {
-            "title": f"Documentation: {query[:40]}...",
+            "title": "Campaign Fundamentals",
             "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
         },
         {
-            "title": f"Best Practices: {query[:40]}...",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
+            "title": "Confluence Search",
+            "url": f"https://blueshift.atlassian.net/wiki/search?text={query.replace(' ', '%20')[:50]}"
         },
         {
-            "title": f"Implementation Guide: {query[:40]}...",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
+            "title": "Customer Engineering Space",
+            "url": "https://blueshift.atlassian.net/wiki/spaces/CE"
         }
     ]
 
-    # Support tickets
+    # Support tickets - real search
     support_tickets = [
         {
-            "title": f"#{40649}: Support case related to {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40649"
+            "title": "Zendesk Search",
+            "url": f"https://blueshiftsuccess.zendesk.com/agent/search/1?type=ticket&q={query.replace(' ', '%20')[:50]}"
         },
         {
-            "title": f"#{40650}: Configuration issue with {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40650"
+            "title": "Recent Tickets",
+            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets"
         },
         {
-            "title": f"#{40651}: Technical investigation: {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40651"
+            "title": "Open Tickets",
+            "url": "https://blueshiftsuccess.zendesk.com/agent/filters/360094648654"
         }
     ]
 
-    # JIRA tickets
+    # JIRA tickets - functional searches
     query_encoded = query.replace(' ', '%20')[:50]
     jira_tickets = [
         {
-            "title": f"Search JIRA: Issues about '{query[:30]}...'",
+            "title": "JIRA Text Search",
             "url": f"https://blueshift.atlassian.net/issues/?jql=text~\"{query_encoded}\""
         },
         {
-            "title": f"Recent JIRA issues: '{query[:30]}...'",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
+            "title": "Recent Issues",
+            "url": "https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
         },
         {
-            "title": f"Open JIRA issues: '{query[:30]}...'",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=status!=Done"
+            "title": "Open Issues",
+            "url": "https://blueshift.atlassian.net/issues/?jql=status!=Done"
         }
     ]
 
@@ -253,14 +253,14 @@ Generate a practical troubleshooting SQL query for AWS Athena that would help di
 
 Example troubleshooting patterns for campaign_execution_v3:
 - Error analysis: WHERE log_level = 'ERROR' AND message LIKE '%ErrorType%'
-- Time-based filtering: WHERE file_date >= 'YYYY-MM-DD' AND timestamp_millis >= TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
-- Account-specific: WHERE account_uuid = 'uuid-value'
+- Time-based filtering: WHERE file_date = '2025-08-26' AND timestamp_millis >= TIMESTAMP '2025-08-26 02:00:00' AND timestamp_millis <= TIMESTAMP '2025-08-26 15:30:00'
+- Account-specific: WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 - Campaign tracking: WHERE campaign_uuid = 'uuid-value'
 
 The query should:
 1. Only use tables that exist in the available tables list above
 2. Include relevant WHERE clauses to filter for the specific issue
-3. Use appropriate time filters with file_date and timestamp_millis columns
+3. Use proper data type handling - file_date should use = (equals) not >= for exact date matching, timestamp_millis should use TIMESTAMP format
 4. Select key diagnostic fields like timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 5. Order results logically (usually by timestamp)
 6. Focus on the most relevant table (like campaign_execution_v3 for most support issues)

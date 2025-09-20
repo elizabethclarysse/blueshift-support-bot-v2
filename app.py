@@ -145,21 +145,46 @@ def search_confluence_docs(query, limit=3):
             'Accept': 'application/json'
         }
 
-        # Use the content search API
-        url = f"{CONFLUENCE_URL}/rest/api/content/search"
+        # Use regular content API with better search and URL handling
+        url = f"{CONFLUENCE_URL}/rest/api/content"
+
+        # Try multiple search approaches for better relevance
+        query_words = query.split()
+        search_terms = []
+
+        # Add individual words
+        for word in query_words:
+            if len(word) > 2:  # Skip very short words
+                search_terms.append(word)
+
+        # Join with OR for broader search
+        search_query = ' OR '.join(search_terms[:5])  # Limit to avoid too complex queries
 
         response = requests.get(url, headers=headers, params={
-            'cql': f'text ~ "{query}" and type = "page"',
-            'limit': limit
+            'cql': f'type = "page" AND (title ~ "{search_query}" OR text ~ "{search_query}")',
+            'limit': limit,
+            'expand': 'space,version,body'
         }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
             results = []
             for result in data.get('results', []):
+                # Construct proper URL - handle different URL formats
+                base_url = CONFLUENCE_URL.replace('/wiki', '').rstrip('/')
+                web_link = result.get('_links', {}).get('webui', '')
+
+                if web_link.startswith('/'):
+                    full_url = f"{base_url}{web_link}"
+                else:
+                    # Construct URL manually if webui link is not available
+                    space_key = result.get('space', {}).get('key', '')
+                    page_id = result.get('id', '')
+                    full_url = f"{base_url}/spaces/{space_key}/pages/{page_id}"
+
                 results.append({
                     'title': result.get('title', 'Untitled'),
-                    'url': f"{CONFLUENCE_URL.replace('/wiki', '')}{result.get('_links', {}).get('webui', '')}"
+                    'url': full_url
                 })
             logger.info(f"Confluence search found {len(results)} results")
             return results
@@ -217,42 +242,48 @@ def search_zendesk_tickets(query, limit=3):
     return []
 
 def search_help_docs(query, limit=3):
-    """Smart help doc selection from curated list"""
-    # Curated help docs with intelligent selection
-    all_help_docs = {
-        'platform': [
-            {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-            {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-            {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633"}
-        ],
-        'campaigns': [
-            {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893"}
-        ],
-        'integration': [
-            {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"},
-            {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853"},
-            {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773"}
-        ],
-        'analytics': [
-            {"title": "Analytics Dashboard", "url": "https://help.blueshift.com/hc/en-us/articles/115002713613"},
-            {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713533"},
-            {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453"}
-        ]
-    }
+    """Search through all help docs for relevance"""
+    # All help docs in one list for searching
+    all_help_docs = [
+        {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283", "keywords": ["platform", "engagement", "customer", "overview"]},
+        {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894", "keywords": ["implementation", "setup", "getting started", "overview"]},
+        {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633", "keywords": ["customer", "profile", "data", "unified"]},
+        {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633", "keywords": ["campaign", "metrics", "analytics", "performance"]},
+        {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473", "keywords": ["getting started", "setup", "beginner", "basics"]},
+        {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893", "keywords": ["journey", "builder", "automation", "workflow"]},
+        {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053", "keywords": ["api", "integration", "developer", "external", "fetch"]},
+        {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853", "keywords": ["mobile", "sdk", "integration", "app"]},
+        {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773", "keywords": ["issues", "problems", "troubleshoot", "failing", "error"]},
+        {"title": "Analytics Dashboard", "url": "https://help.blueshift.com/hc/en-us/articles/115002713613", "keywords": ["analytics", "dashboard", "reporting", "metrics"]},
+        {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713533", "keywords": ["reports", "custom", "data", "analytics"]},
+        {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453", "keywords": ["event", "tracking", "data", "analytics"]}
+    ]
 
     query_lower = query.lower()
+    query_words = set(query_lower.split())
 
-    # Smart category selection based on keywords
-    if any(kw in query_lower for kw in ['campaign', 'journey', 'trigger', 'message']):
-        return all_help_docs['campaigns'][:limit]
-    elif any(kw in query_lower for kw in ['api', 'sdk', 'integration', 'implement', 'setup']):
-        return all_help_docs['integration'][:limit]
-    elif any(kw in query_lower for kw in ['analytics', 'report', 'metric', 'data', 'track']):
-        return all_help_docs['analytics'][:limit]
-    else:
-        return all_help_docs['platform'][:limit]
+    # Score each doc based on relevance
+    scored_docs = []
+    for doc in all_help_docs:
+        score = 0
+        # Check title relevance
+        title_words = set(doc['title'].lower().split())
+        score += len(query_words.intersection(title_words)) * 3
+
+        # Check keyword relevance
+        keyword_words = set(' '.join(doc['keywords']).lower().split())
+        score += len(query_words.intersection(keyword_words)) * 2
+
+        # Bonus for exact phrase matches in title or keywords
+        if any(word in doc['title'].lower() for word in query_words):
+            score += 1
+
+        if score > 0:
+            scored_docs.append((score, doc))
+
+    # Sort by score and return top results
+    scored_docs.sort(reverse=True, key=lambda x: x[0])
+    return [doc for score, doc in scored_docs[:limit]]
 
 def generate_related_resources(query):
     """Generate contextually relevant resources using API searches with smart fallbacks"""

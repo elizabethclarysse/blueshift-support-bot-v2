@@ -179,6 +179,7 @@ def query_athena(query_string, database_name, query_description="Athena query"):
 
         if status != 'SUCCEEDED':
             error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Query failed')
+            print(f"Athena query failed. Status: {status}, Error: {error_msg}")
             return {"error": f"Query failed: {error_msg}", "data": []}
 
         # Get query results
@@ -204,7 +205,33 @@ def query_athena(query_string, database_name, query_description="Athena query"):
 
     except Exception as e:
         print(f"Athena query error: {e}")
+        print(f"Query was: {query_string}")
         return {"error": str(e), "data": []}
+
+def customize_query_for_execution(sql_query, user_query):
+    """Customize the generated query with more realistic parameters for execution"""
+
+    # Use your real account UUID as default
+    real_account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+
+    # Replace generic UUIDs with real ones
+    customized = sql_query.replace('uuid-value', real_account_uuid)
+    customized = customized.replace('account_uuid = \'uuid-value\'', f'account_uuid = \'{real_account_uuid}\'')
+
+    # Use more recent dates that are likely to have data
+    import datetime
+    recent_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+
+    # Replace overly restrictive date ranges
+    customized = customized.replace('file_date >= \'2025-01-01\'', f'file_date >= \'{recent_date}\'')
+    customized = customized.replace('file_date >= \'2024-08-01\'', f'file_date >= \'{recent_date}\'')
+
+    # For ExternalFetchError example, use recent date
+    if 'ExternalFetchError' in user_query.lower() or 'fetch' in user_query.lower():
+        customized = customized.replace('AND file_date >= ', f'AND file_date = \'{recent_date}\' AND file_date >= ')
+        customized = customized.replace(f'AND file_date = \'{recent_date}\' AND file_date >= \'{recent_date}\'', f'AND file_date >= \'{recent_date}\'')
+
+    return customized
 
 def get_available_tables(database_name):
     """Get list of available tables in the database"""
@@ -259,7 +286,7 @@ Key rules:
 1. Keep it simple - basic SELECT with simple WHERE clauses only
 2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
 3. Always include: WHERE log_level = 'ERROR' for error analysis
-4. Always include: WHERE file_date >= '2025-01-01' for recent data
+4. Always include: WHERE file_date >= '2024-08-01' for recent data (use more recent dates)
 5. Always include: ORDER BY timestamp ASC LIMIT 100
 6. Use exact string matching like file_date = '2025-08-26' (not >=)
 7. No complex functions, no TIMESTAMP(), no date calculations - keep it basic
@@ -342,16 +369,15 @@ def parse_athena_analysis(ai_response, user_query):
             elif in_explanation_section and line:
                 explanation += line + "\n"
 
-        # Execute the query if we have one
+        # Return the suggested query template for manual customization
         if sql_query.strip():
             print(f"Generated SQL Query: {sql_query.strip()}")  # Debug output
-            query_results = query_athena(sql_query.strip(), database_name, f"Query for: {user_query}")
             return {
                 'database': database_name,
                 'sql_query': sql_query.strip(),
-                'explanation': explanation.strip(),
-                'results': query_results,
-                'has_data': len(query_results.get('data', [])) > 0
+                'explanation': explanation.strip() + "\n\nCopy this query to Athena and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
+                'results': {"note": "Query template ready for manual customization in Athena", "data": []},
+                'has_data': False
             }
         else:
             return get_default_athena_insights(user_query)
@@ -362,15 +388,19 @@ def parse_athena_analysis(ai_response, user_query):
 
 def get_default_athena_insights(user_query):
     """Provide default Athena insights when AI analysis fails"""
-    # Use a simple, safe query that works with any database
+    # Use the simplest possible working query
     database_name = ATHENA_DATABASES[0]
-    default_query = f"SHOW TABLES IN {database_name}"
+    default_query = f"""SELECT timestamp, message
+FROM {database_name}.campaign_execution_v3
+WHERE log_level = 'ERROR'
+ORDER BY timestamp DESC
+LIMIT 10"""
 
     return {
         'database': database_name,
         'sql_query': default_query,
-        'explanation': f'Showing available tables in database "{database_name}" to help analyze: {user_query}',
-        'results': {"data": [], "columns": [], "note": "Query will show available tables when AWS credentials are configured"},
+        'explanation': f'Recent error logs from campaign_execution_v3 related to: {user_query}',
+        'results': {"data": [], "columns": [], "note": "Sample query - will show real data when executed"},
         'has_data': False
     }
 
@@ -426,6 +456,27 @@ def handle_followup():
     except Exception as e:
         print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
+
+@app.route('/execute_query', methods=['POST'])
+def execute_custom_query():
+    """Execute a custom Athena query"""
+    try:
+        data = request.get_json()
+        custom_query = data.get('query', '').strip()
+        database = data.get('database', ATHENA_DATABASES[0])
+
+        if not custom_query:
+            return jsonify({"error": "Please provide a SQL query"})
+
+        # Execute the custom query
+        print(f"Executing custom query: {custom_query}")
+        results = query_athena(custom_query, database, "Custom query execution")
+
+        return jsonify(results)
+
+    except Exception as e:
+        print(f"Error in execute_custom_query: {e}")
+        return jsonify({"error": str(e)})
 
 # Exact copy of production HTML with correct styling
 MAIN_TEMPLATE = '''
@@ -779,10 +830,11 @@ MAIN_TEMPLATE = '''
                 <div><strong>Analysis:</strong></div>
                 <div id="athenaExplanation" style="white-space: pre-line; margin-top: 8px; line-height: 1.6;"></div>
 
-                <details>
-                    <summary style="cursor: pointer; color: #2790FF; font-weight: bold;">View SQL Query</summary>
-                    <div id="athenaQuery" class="sql-query"></div>
-                </details>
+                <div style="margin: 15px 0;">
+                    <label for="editableQuery" style="font-weight: bold; color: #2790FF;">Customize and Execute Query:</label>
+                    <textarea id="editableQuery" class="sql-query" style="width: 100%; height: 120px; margin-top: 5px; font-family: 'Courier New', monospace; font-size: 12px; border: 2px solid #2790FF; border-radius: 8px; padding: 10px;" placeholder="SQL query will appear here for editing..."></textarea>
+                    <button id="executeQueryBtn" style="margin-top: 10px; background: linear-gradient(45deg, #2790FF, #4da6ff); color: white; border: none; padding: 10px 20px; border-radius: 25px; cursor: pointer;">Execute Query in Bot</button>
+                </div>
 
                 <div id="athenaStatus"></div>
                 <div id="athenaResults" class="data-table"></div>
@@ -983,49 +1035,92 @@ MAIN_TEMPLATE = '''
             // Set explanation
             document.getElementById('athenaExplanation').textContent = athenaData.explanation;
 
-            // Set SQL query
-            document.getElementById('athenaQuery').textContent = athenaData.sql_query;
+            // Set editable SQL query
+            document.getElementById('editableQuery').value = athenaData.sql_query;
 
-            // Handle results
-            const statusDiv = document.getElementById('athenaStatus');
-            const resultsDiv = document.getElementById('athenaResults');
-
-            if (athenaData.results.error) {
-                statusDiv.innerHTML = `
-                    <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
-                        <strong>Query Status:</strong> ${athenaData.results.error}
-                        <br><small>Configure AWS credentials and Athena database to execute queries.</small>
-                    </div>
-                `;
-                resultsDiv.innerHTML = '';
-            } else if (athenaData.has_data && athenaData.results.data.length > 0) {
-                statusDiv.innerHTML = '';
-
-                let tableHTML = '<table><thead><tr>';
-                athenaData.results.columns.forEach(column => {
-                    tableHTML += `<th>${column}</th>`;
-                });
-                tableHTML += '</tr></thead><tbody>';
-
-                athenaData.results.data.forEach(row => {
-                    tableHTML += '<tr>';
-                    athenaData.results.columns.forEach(column => {
-                        tableHTML += `<td>${row[column] || ''}</td>`;
-                    });
-                    tableHTML += '</tr>';
-                });
-                tableHTML += '</tbody></table>';
-
-                resultsDiv.innerHTML = tableHTML;
-            } else {
-                statusDiv.innerHTML = `
-                    <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; color: #1976d2; margin-top: 15px;">
-                        <strong>Ready to Execute:</strong> Configure your AWS credentials to run this query and get live data insights.
-                    </div>
-                `;
-                resultsDiv.innerHTML = '';
-            }
+            // Clear previous results
+            document.getElementById('athenaStatus').innerHTML = '';
+            document.getElementById('athenaResults').innerHTML = '';
         }
+
+        // Handle custom query execution
+        document.getElementById('executeQueryBtn').addEventListener('click', function() {
+            const customQuery = document.getElementById('editableQuery').value.trim();
+            if (!customQuery) {
+                alert('Please enter a SQL query to execute');
+                return;
+            }
+
+            // Show loading
+            document.getElementById('executeQueryBtn').innerHTML = '<span class="loading"></span> Executing...';
+            document.getElementById('executeQueryBtn').disabled = true;
+
+            fetch('/execute_query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    query: customQuery,
+                    database: document.getElementById('athenaDatabase').textContent
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const statusDiv = document.getElementById('athenaStatus');
+                const resultsDiv = document.getElementById('athenaResults');
+
+                if (data.error) {
+                    statusDiv.innerHTML = `
+                        <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
+                            <strong>Query Error:</strong> ${data.error}
+                        </div>
+                    `;
+                    resultsDiv.innerHTML = '';
+                } else if (data.data && data.data.length > 0) {
+                    statusDiv.innerHTML = `
+                        <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; color: #2e7d2e; margin-top: 15px;">
+                            <strong>Query Successful:</strong> Found ${data.data.length} results
+                        </div>
+                    `;
+
+                    let tableHTML = '<table><thead><tr>';
+                    data.columns.forEach(column => {
+                        tableHTML += `<th>${column}</th>`;
+                    });
+                    tableHTML += '</tr></thead><tbody>';
+
+                    data.data.forEach(row => {
+                        tableHTML += '<tr>';
+                        data.columns.forEach(column => {
+                            tableHTML += `<td>${row[column] || ''}</td>`;
+                        });
+                        tableHTML += '</tr>';
+                    });
+                    tableHTML += '</tbody></table>';
+
+                    resultsDiv.innerHTML = tableHTML;
+                } else {
+                    statusDiv.innerHTML = `
+                        <div style="background: #fff3cd; padding: 15px; border-radius: 8px; color: #856404; margin-top: 15px;">
+                            <strong>Query Successful:</strong> No results found for this query
+                        </div>
+                    `;
+                    resultsDiv.innerHTML = '';
+                }
+
+                // Reset button
+                document.getElementById('executeQueryBtn').innerHTML = 'Execute Custom Query';
+                document.getElementById('executeQueryBtn').disabled = false;
+            })
+            .catch(error => {
+                document.getElementById('athenaStatus').innerHTML = `
+                    <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
+                        <strong>Error:</strong> ${error}
+                    </div>
+                `;
+                document.getElementById('executeQueryBtn').innerHTML = 'Execute Custom Query';
+                document.getElementById('executeQueryBtn').disabled = false;
+            });
+        });
     </script>
 </body>
 </html>

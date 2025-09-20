@@ -156,14 +156,13 @@ def search_confluence_docs(query, limit=3):
         query_words = [word.strip() for word in query.lower().split() if len(word.strip()) > 2]
 
         if len(query_words) > 1:
-            # For multi-word queries like "external fetch failing", create better search
-            # Look for pages that contain multiple relevant keywords
+            # For multi-word queries, use OR for broader results but score for relevance later
             keyword_conditions = []
             for word in query_words:
                 keyword_conditions.append(f'(title ~ "{word}" OR text ~ "{word}")')
 
-            # Combine with AND for better relevance (pages must contain multiple keywords)
-            cql_query = f'type = "page" AND ({" AND ".join(keyword_conditions)})'
+            # Use OR to get broader results, then score for relevance
+            cql_query = f'type = "page" AND ({" OR ".join(keyword_conditions)})'
         else:
             # Single word search
             word = query_words[0] if query_words else query

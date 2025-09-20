@@ -190,27 +190,26 @@ def search_confluence_docs(query, limit=3):
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
-                # Calculate relevance score for any type of query
-                relevance_score = 0
+                # Use Confluence's own relevance score first, then enhance it
+                api_score = result.get('score', 0)
+                relevance_score = api_score * 100  # Scale up API score
+
+                # Add our own relevance scoring on top
                 title_lower = title.lower()
                 query_lower = query.lower()
 
-                # Exact phrase match in title (highest score)
+                # Exact phrase match in title (highest bonus)
                 if query_lower in title_lower:
-                    relevance_score += 50
+                    relevance_score += 1000
 
                 # Count how many query words appear in title
                 query_words_in_query = query_lower.split()
                 words_in_title = sum(1 for word in query_words_in_query if word.strip() in title_lower)
-                relevance_score += words_in_title * 10
+                relevance_score += words_in_title * 100
 
-                # Longer titles with more matches get bonus
-                if len(query_words_in_query) > 1 and words_in_title > 1:
-                    relevance_score += words_in_title * 5
-
-                # Any match gets some base score (don't skip any results)
-                if relevance_score == 0:
-                    relevance_score = 1  # Give minimal score instead of skipping
+                # If no meaningful matches, use minimal score
+                if relevance_score < 10:
+                    relevance_score = 1
 
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")
@@ -220,33 +219,25 @@ def search_confluence_docs(query, limit=3):
                 if '_links' in result:
                     logger.info(f"Available links: {result['_links'].keys()}")
 
-                # Try multiple URL construction methods
-                full_url = None
+                # Try to get the direct URL from the API response first
+                full_url = result.get('url', '')
 
-                # Method 1: Use _links.webui (most reliable)
-                web_link = result.get('_links', {}).get('webui', '')
-                if web_link:
-                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
-                    logger.info(f"Using webui link: {full_url}")
-
-                # Method 2: Use _links.base + _links.self
-                elif result.get('_links', {}).get('base') and result.get('_links', {}).get('self'):
-                    base_url = result['_links']['base']
-                    self_path = result['_links']['self']
-                    full_url = f"{base_url}{self_path}"
-                    logger.info(f"Using base + self: {full_url}")
-
-                # Method 3: Construct from space and page ID
-                elif space_key and page_id:
-                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
-                    logger.info(f"Using constructed URL: {full_url}")
-
-                # Method 4: Just use the title in a search URL (fallback)
+                if full_url:
+                    logger.info(f"Using direct API URL: {full_url}")
                 else:
-                    # Create a search URL as last resort
-                    encoded_title = title.replace(' ', '+').replace('?', '')
-                    full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
-                    logger.info(f"Using search fallback: {full_url}")
+                    # Fallback to URL construction
+                    web_link = result.get('_links', {}).get('webui', '')
+                    if web_link:
+                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
+                        logger.info(f"Using webui link: {full_url}")
+                    elif space_key and page_id:
+                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
+                        logger.info(f"Using constructed URL: {full_url}")
+                    else:
+                        # Create a search URL as last resort
+                        encoded_title = title.replace(' ', '+').replace('?', '')
+                        full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+                        logger.info(f"Using search fallback: {full_url}")
 
                 if not full_url:
                     logger.warning(f"Could not construct URL for Confluence result '{title}'")

@@ -156,15 +156,28 @@ def search_confluence_docs(query, limit=5):
         # Search both title and text for the full query AND individual keywords
         query_clean = query.strip()
 
-        # Build focused CQL query that prioritizes exact phrase matches
-        # Start with exact phrase search for better relevance
-        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
+        # Build a comprehensive CQL query that searches broadly
+        search_conditions = []
+
+        # Search for the exact phrase first
+        search_conditions.append(f'title ~ "{query_clean}"')
+        search_conditions.append(f'text ~ "{query_clean}"')
+
+        # Also search for individual important keywords
+        keywords = query_clean.lower().split()
+        for keyword in keywords:
+            if len(keyword.strip()) > 2:  # Skip very short words
+                search_conditions.append(f'title ~ "{keyword.strip()}"')
+                search_conditions.append(f'text ~ "{keyword.strip()}"')
+
+        # Use OR to get maximum coverage - let relevance scoring handle ranking
+        cql_query = f'type = "page" AND ({" OR ".join(search_conditions)})'
 
         logger.info(f"Confluence CQL query: {cql_query}")
 
         response = requests.get(url, headers=headers, params={
             'cql': cql_query,
-            'limit': 15,  # Get reasonable number of results
+            'limit': 20,  # Get many more results to find truly relevant ones
             'expand': 'space'
         }, timeout=15)
 
@@ -1377,4 +1390,16 @@ if __name__ == '__main__':
     print(f"AWS Region: {AWS_REGION}")
     print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
     print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
+
+    # Debug: Check environment variables
+    print(f"\n=== Environment Variables Debug ===")
+    print(f"JIRA_TOKEN: {'✅ Configured' if JIRA_TOKEN else '❌ Not set'}")
+    print(f"JIRA_EMAIL: {'✅ Configured' if JIRA_EMAIL else '❌ Not set'}")
+    print(f"CONFLUENCE_TOKEN: {'✅ Configured' if CONFLUENCE_TOKEN else '❌ Not set'}")
+    print(f"CONFLUENCE_EMAIL: {'✅ Configured' if CONFLUENCE_EMAIL else '❌ Not set'}")
+    print(f"ZENDESK_TOKEN: {'✅ Configured' if ZENDESK_TOKEN else '❌ Not set'}")
+    print(f"ZENDESK_EMAIL: {'✅ Configured' if ZENDESK_EMAIL else '❌ Not set'}")
+    print(f"ZENDESK_SUBDOMAIN: {'✅ Configured' if ZENDESK_SUBDOMAIN else '❌ Not set'}")
+    print("=" * 40)
+
     app.run(host='0.0.0.0', port=port, debug=True)

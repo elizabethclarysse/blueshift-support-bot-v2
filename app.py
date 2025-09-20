@@ -207,12 +207,13 @@ def search_confluence_docs(query, limit=5):
                 title_word_matches = sum(1 for word in query_words if len(word) > 2 and word in title_lower)
                 relevance_score += title_word_matches * 20
 
-                # Filter out clearly irrelevant results
-                # Only include if title has query relevance OR very high API score
+                # Filter out clearly irrelevant results but be less restrictive
+                # Only include if title has some query relevance OR decent API score
                 has_title_relevance = query_lower in title_lower or title_word_matches > 0
-                has_high_api_score = api_score > 50  # High confidence from Confluence API
+                has_decent_api_score = api_score > 10  # Lower threshold - trust Confluence more
 
-                if not (has_title_relevance or has_high_api_score):
+                # If no title relevance and very low API score, it's probably garbage
+                if not has_title_relevance and api_score < 5:
                     continue  # Skip this result as likely irrelevant
 
                 # Debug logging to see what we're getting

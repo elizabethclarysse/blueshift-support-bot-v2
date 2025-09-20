@@ -244,35 +244,25 @@ Available tables in {database_name}: {table_list}
 
 IMPORTANT: You must ONLY use the actual table names listed above. Do not use generic names.
 
-Generate a practical troubleshooting SQL query for AWS Athena that would help diagnose this support issue. Focus on queries that would:
-- Find error logs and failure messages
-- Check campaign execution status and timing
-- Identify delivery issues or API problems
-- Track user engagement or conversion problems
-- Monitor system performance or data issues
+Generate a SIMPLE troubleshooting SQL query for AWS Athena.
 
-Example troubleshooting patterns for campaign_execution_v3:
-- Error analysis: WHERE log_level = 'ERROR' AND message LIKE '%ExternalFetchError%'
-- Time-based filtering: WHERE file_date = '2025-08-26' AND timestamp_millis >= TIMESTAMP '2025-08-26 02:00:00' AND timestamp_millis <= TIMESTAMP '2025-08-26 15:30:00'
-- Account-specific: WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-- Campaign tracking: WHERE campaign_uuid = 'uuid-value'
-- Recent data only: WHERE file_date >= '2025-01-01'
+If campaign_execution_v3 table is available, create a basic query following this exact pattern:
 
-IMPORTANT: Use standard Athena syntax only:
-- For current date use: date_format(now(), '%Y-%m-%d')
-- For timestamps use: TIMESTAMP '2025-08-26 15:30:00' format
-- For date comparisons use: file_date = '2025-08-26' (exact match)
-- Avoid CURRENT_TIMESTAMP, NOW(), CURRENT_DATE - use now() or specific dates instead
-- Do NOT invent column names - only use the known columns listed above
-- Follow the exact pattern of the working ExternalFetchError query example
+SELECT timestamp, user_uuid, campaign_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE log_level = 'ERROR'
+AND file_date >= '2025-01-01'
+ORDER BY timestamp ASC
+LIMIT 100
 
-The query should:
-1. Only use tables that exist in the available tables list above
-2. Include relevant WHERE clauses to filter for the specific issue
-3. Use proper Athena syntax - avoid CURRENT_TIMESTAMP, use specific dates or now() function
-4. Select ONLY these known fields from campaign_execution_v3: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
-5. Order results logically (usually by timestamp)
-6. Focus on the most relevant table (like campaign_execution_v3 for most support issues)
+Key rules:
+1. Keep it simple - basic SELECT with simple WHERE clauses only
+2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
+3. Always include: WHERE log_level = 'ERROR' for error analysis
+4. Always include: WHERE file_date >= '2025-01-01' for recent data
+5. Always include: ORDER BY timestamp ASC LIMIT 100
+6. Use exact string matching like file_date = '2025-08-26' (not >=)
+7. No complex functions, no TIMESTAMP(), no date calculations - keep it basic
 
 If the available tables list is empty, create a simple SHOW TABLES query instead.
 
@@ -354,6 +344,7 @@ def parse_athena_analysis(ai_response, user_query):
 
         # Execute the query if we have one
         if sql_query.strip():
+            print(f"Generated SQL Query: {sql_query.strip()}")  # Debug output
             query_results = query_athena(sql_query.strip(), database_name, f"Query for: {user_query}")
             return {
                 'database': database_name,

@@ -890,7 +890,7 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div class="sources-section">
-                <h3>Related Resources</h3>
+                <h3>Resources</h3>
                 <div id="sourcesGrid" class="sources-grid"></div>
             </div>
 
@@ -898,7 +898,7 @@ MAIN_TEMPLATE = '''
 
         <div class="features">
             <div class="feature">
-                <h3>🎫 Related JIRAs</h3>
+                <h3>🎫 JIRAs</h3>
                 <ul>
                     <li>Links to relevant JIRA tickets and bugs</li>
                     <li>Known issues and their current status</li>

@@ -105,15 +105,19 @@ def search_jira_tickets(query, limit=3):
             'Content-Type': 'application/json'
         }
 
-        # Use the new JQL search endpoint
+        # Use the migrated JQL endpoint as recommended by Atlassian
         jql = f'text ~ "{query}" ORDER BY updated DESC'
+
+        # Try the new jql endpoint first, fallback if it doesn't work
         url = f"{JIRA_URL}/rest/api/3/search/jql"
 
-        response = requests.get(url, headers=headers, params={
+        payload = {
             'jql': jql,
             'maxResults': limit,
-            'fields': 'summary,key,status'
-        }, timeout=15)
+            'fields': ['summary', 'key', 'status']
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
@@ -148,20 +152,9 @@ def search_confluence_docs(query, limit=3):
         # Use regular content API with better search and URL handling
         url = f"{CONFLUENCE_URL}/rest/api/content"
 
-        # Try multiple search approaches for better relevance
-        query_words = query.split()
-        search_terms = []
-
-        # Add individual words
-        for word in query_words:
-            if len(word) > 2:  # Skip very short words
-                search_terms.append(word)
-
-        # Join with OR for broader search
-        search_query = ' OR '.join(search_terms[:5])  # Limit to avoid too complex queries
-
+        # Use more precise search - require exact phrase match for better relevance
         response = requests.get(url, headers=headers, params={
-            'cql': f'type = "page" AND (title ~ "{search_query}" OR text ~ "{search_query}")',
+            'cql': f'type = "page" AND (title ~ "{query}" OR text ~ "{query}")',
             'limit': limit,
             'expand': 'space,version,body'
         }, timeout=15)

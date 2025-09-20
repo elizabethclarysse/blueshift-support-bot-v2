@@ -170,23 +170,33 @@ def search_confluence_docs(query, limit=3):
             data = response.json()
             results = []
             for result in data.get('results', []):
-                # Construct proper URL - handle different URL formats
-                base_url = CONFLUENCE_URL.replace('/wiki', '').rstrip('/')
-                web_link = result.get('_links', {}).get('webui', '')
+                title = result.get('title', 'Untitled')
+                space_key = result.get('space', {}).get('key', '')
+                page_id = result.get('id', '')
 
-                if web_link.startswith('/'):
-                    full_url = f"{base_url}{web_link}"
+                # Debug logging to see what we're getting
+                logger.info(f"Confluence result: title='{title}', space='{space_key}', id='{page_id}'")
+
+                # Try the standard Confluence URL format
+                if space_key and page_id:
+                    # Use the standard viewpage format that most Confluence instances use
+                    full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}/{title.replace(' ', '+')}"
                 else:
-                    # Construct URL manually if webui link is not available
-                    space_key = result.get('space', {}).get('key', '')
-                    page_id = result.get('id', '')
-                    full_url = f"{base_url}/spaces/{space_key}/pages/{page_id}"
+                    # Fallback to webui link if available
+                    web_link = result.get('_links', {}).get('webui', '')
+                    if web_link:
+                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
+                    else:
+                        # Skip this result if we can't construct a valid URL
+                        logger.warning(f"Skipping Confluence result '{title}' - no valid URL available")
+                        continue
 
                 results.append({
-                    'title': result.get('title', 'Untitled'),
+                    'title': title,
                     'url': full_url
                 })
-            logger.info(f"Confluence search found {len(results)} results")
+
+            logger.info(f"Confluence search found {len(results)} valid results")
             return results
         else:
             logger.error(f"Confluence API error: {response.status_code} - {response.text[:200]}")
@@ -283,7 +293,14 @@ def search_help_docs(query, limit=3):
 
     # Sort by score and return top results
     scored_docs.sort(reverse=True, key=lambda x: x[0])
-    return [doc for score, doc in scored_docs[:limit]]
+    results = [doc for score, doc in scored_docs[:limit]]
+
+    # Debug logging
+    logger.info(f"Help docs query: '{query}' -> found {len(results)} results")
+    for i, doc in enumerate(results):
+        logger.info(f"  {i+1}. {doc['title']}")
+
+    return results
 
 def generate_related_resources(query):
     """Generate contextually relevant resources using API searches with smart fallbacks"""

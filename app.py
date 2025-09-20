@@ -252,15 +252,22 @@ Generate a practical troubleshooting SQL query for AWS Athena that would help di
 - Monitor system performance or data issues
 
 Example troubleshooting patterns for campaign_execution_v3:
-- Error analysis: WHERE log_level = 'ERROR' AND message LIKE '%ErrorType%'
+- Error analysis: WHERE log_level = 'ERROR' AND message LIKE '%ExternalFetchError%'
 - Time-based filtering: WHERE file_date = '2025-08-26' AND timestamp_millis >= TIMESTAMP '2025-08-26 02:00:00' AND timestamp_millis <= TIMESTAMP '2025-08-26 15:30:00'
 - Account-specific: WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 - Campaign tracking: WHERE campaign_uuid = 'uuid-value'
+- Recent data only: WHERE file_date >= '2025-01-01'
+
+IMPORTANT: Use standard Athena syntax only:
+- For current date use: date_format(now(), '%Y-%m-%d')
+- For timestamps use: TIMESTAMP '2025-08-26 15:30:00' format
+- For date comparisons use: file_date = '2025-08-26' (exact match)
+- Avoid CURRENT_TIMESTAMP, NOW(), CURRENT_DATE - use now() or specific dates instead
 
 The query should:
 1. Only use tables that exist in the available tables list above
 2. Include relevant WHERE clauses to filter for the specific issue
-3. Use proper data type handling - file_date should use = (equals) not >= for exact date matching, timestamp_millis should use TIMESTAMP format
+3. Use proper Athena syntax - avoid CURRENT_TIMESTAMP, use specific dates or now() function
 4. Select key diagnostic fields like timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 5. Order results logically (usually by timestamp)
 6. Focus on the most relevant table (like campaign_execution_v3 for most support issues)

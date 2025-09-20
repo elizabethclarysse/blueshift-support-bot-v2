@@ -271,25 +271,47 @@ Available tables in {database_name}: {table_list}
 
 IMPORTANT: You must ONLY use the actual table names listed above. Do not use generic names.
 
-Generate a SIMPLE troubleshooting SQL query for AWS Athena.
+Generate a SIMPLE troubleshooting SQL query for AWS Athena based on the user's question.
 
-If campaign_execution_v3 table is available, create a basic query following this exact pattern:
+Analyze the user query and create an appropriate query. Examples:
 
-SELECT timestamp, user_uuid, campaign_uuid, message
+For ERROR/FAILURE queries:
+SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 FROM customer_campaign_logs.campaign_execution_v3
-WHERE log_level = 'ERROR'
-AND file_date >= '2025-01-01'
+WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+AND log_level = 'ERROR'
+AND message LIKE '%ExternalFetchError%'
+AND file_date >= '2024-08-01'
+ORDER BY timestamp ASC
+LIMIT 100
+
+For CAMPAIGN PERFORMANCE queries:
+SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+AND log_level IN ('INFO', 'SUCCESS')
+AND file_date >= '2024-08-01'
+ORDER BY timestamp ASC
+LIMIT 100
+
+For DELIVERY queries:
+SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+AND message LIKE '%delivered%'
+AND file_date >= '2024-08-01'
 ORDER BY timestamp ASC
 LIMIT 100
 
 Key rules:
 1. Keep it simple - basic SELECT with simple WHERE clauses only
 2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
-3. Always include: WHERE log_level = 'ERROR' for error analysis
-4. Always include: WHERE file_date >= '2024-08-01' for recent data (use more recent dates)
-5. Always include: ORDER BY timestamp ASC LIMIT 100
-6. Use exact string matching like file_date = '2025-08-26' (not >=)
-7. No complex functions, no TIMESTAMP(), no date calculations - keep it basic
+3. ALWAYS include: WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985' (required for all queries)
+4. Choose appropriate log_level based on query type (ERROR for failures, INFO/SUCCESS for performance, etc.)
+5. Add specific message LIKE filters when relevant to the user's question
+6. Always include: WHERE file_date >= '2024-08-01' for recent data
+7. Always include: ORDER BY timestamp ASC LIMIT 100
+8. No complex functions, no TIMESTAMP(), no date calculations - keep it basic
 
 If the available tables list is empty, create a simple SHOW TABLES query instead.
 

@@ -105,9 +105,9 @@ def search_jira_tickets(query, limit=3):
             'Content-Type': 'application/json'
         }
 
-        # Use simple JQL search
+        # Use the new JQL search endpoint
         jql = f'text ~ "{query}" ORDER BY updated DESC'
-        url = f"{JIRA_URL}/rest/api/3/search"
+        url = f"{JIRA_URL}/rest/api/3/search/jql"
 
         response = requests.get(url, headers=headers, params={
             'jql': jql,
@@ -177,10 +177,19 @@ def search_zendesk_tickets(query, limit=3):
             logger.warning("Zendesk credentials not configured - using fallback")
             return []
 
-        headers = {
-            'Authorization': f'Bearer {ZENDESK_TOKEN}',
-            'Accept': 'application/json'
-        }
+        # Try Basic Auth with email/token combination first
+        if ZENDESK_EMAIL:
+            auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+            headers = {
+                'Authorization': f'Basic {auth}',
+                'Accept': 'application/json'
+            }
+        else:
+            # Fallback to Bearer token
+            headers = {
+                'Authorization': f'Bearer {ZENDESK_TOKEN}',
+                'Accept': 'application/json'
+            }
 
         # Search API endpoint
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"

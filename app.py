@@ -13,8 +13,8 @@ AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
 # AWS Athena configuration - set these via environment variables
 ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
-ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://blueshift-athena-results/')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
 def call_anthropic_api(query):
     """Call Anthropic Claude API for high-quality responses"""
@@ -178,9 +178,17 @@ def query_athena(query_string, database_name, query_description="Athena query"):
             time.sleep(1)
 
         if status != 'SUCCEEDED':
-            error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Query failed')
-            print(f"Athena query failed. Status: {status}, Error: {error_msg}")
-            return {"error": f"Query failed: {error_msg}", "data": []}
+            status_details = result['QueryExecution']['Status']
+            error_msg = status_details.get('StateChangeReason', 'Query failed')
+            failure_reason = status_details.get('AthenaError', {}).get('ErrorMessage', 'No additional error details')
+
+            print(f"Athena query failed:")
+            print(f"  Status: {status}")
+            print(f"  StateChangeReason: {error_msg}")
+            print(f"  AthenaError: {failure_reason}")
+            print(f"  Full status: {status_details}")
+
+            return {"error": f"Query failed: {error_msg}. Details: {failure_reason}", "data": []}
 
         # Get query results
         results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
@@ -479,26 +487,6 @@ def handle_followup():
         print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
 
-@app.route('/execute_query', methods=['POST'])
-def execute_custom_query():
-    """Execute a custom Athena query"""
-    try:
-        data = request.get_json()
-        custom_query = data.get('query', '').strip()
-        database = data.get('database', ATHENA_DATABASES[0])
-
-        if not custom_query:
-            return jsonify({"error": "Please provide a SQL query"})
-
-        # Execute the custom query
-        print(f"Executing custom query: {custom_query}")
-        results = query_athena(custom_query, database, "Custom query execution")
-
-        return jsonify(results)
-
-    except Exception as e:
-        print(f"Error in execute_custom_query: {e}")
-        return jsonify({"error": str(e)})
 
 # Exact copy of production HTML with correct styling
 MAIN_TEMPLATE = '''
@@ -847,19 +835,16 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div id="athenaSection" class="athena-section" style="display: none;">
-                <h3>📊 Data Insights <span class="athena-badge">ATHENA</span></h3>
+                <h3>📊 Suggested Query <span class="athena-badge">ATHENA</span></h3>
                 <p><strong>Database:</strong> <span id="athenaDatabase" style="font-family: monospace; background: #f0f0f0; padding: 2px 6px; border-radius: 4px;"></span></p>
                 <div><strong>Analysis:</strong></div>
                 <div id="athenaExplanation" style="white-space: pre-line; margin-top: 8px; line-height: 1.6;"></div>
 
                 <div style="margin: 15px 0;">
-                    <label for="editableQuery" style="font-weight: bold; color: #2790FF;">Customize and Execute Query:</label>
-                    <textarea id="editableQuery" class="sql-query" style="width: 100%; height: 120px; margin-top: 5px; font-family: 'Courier New', monospace; font-size: 12px; border: 2px solid #2790FF; border-radius: 8px; padding: 10px;" placeholder="SQL query will appear here for editing..."></textarea>
-                    <button id="executeQueryBtn" style="margin-top: 10px; background: linear-gradient(45deg, #2790FF, #4da6ff); color: white; border: none; padding: 10px 20px; border-radius: 25px; cursor: pointer;">Execute Query in Bot</button>
+                    <label for="suggestedQuery" style="font-weight: bold; color: #2790FF;">Copy this query to Athena:</label>
+                    <textarea id="suggestedQuery" class="sql-query" style="width: 100%; height: 120px; margin-top: 5px; font-family: 'Courier New', monospace; font-size: 12px; border: 2px solid #2790FF; border-radius: 8px; padding: 10px;" readonly placeholder="SQL query suggestion will appear here..."></textarea>
+                    <p style="margin-top: 10px; color: #666; font-size: 0.9em;">💡 <strong>Instructions:</strong> Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.</p>
                 </div>
-
-                <div id="athenaStatus"></div>
-                <div id="athenaResults" class="data-table"></div>
             </div>
 
             <div class="followup-section">
@@ -1065,84 +1050,6 @@ MAIN_TEMPLATE = '''
             document.getElementById('athenaResults').innerHTML = '';
         }
 
-        // Handle custom query execution
-        document.getElementById('executeQueryBtn').addEventListener('click', function() {
-            const customQuery = document.getElementById('editableQuery').value.trim();
-            if (!customQuery) {
-                alert('Please enter a SQL query to execute');
-                return;
-            }
-
-            // Show loading
-            document.getElementById('executeQueryBtn').innerHTML = '<span class="loading"></span> Executing...';
-            document.getElementById('executeQueryBtn').disabled = true;
-
-            fetch('/execute_query', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    query: customQuery,
-                    database: document.getElementById('athenaDatabase').textContent
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                const statusDiv = document.getElementById('athenaStatus');
-                const resultsDiv = document.getElementById('athenaResults');
-
-                if (data.error) {
-                    statusDiv.innerHTML = `
-                        <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
-                            <strong>Query Error:</strong> ${data.error}
-                        </div>
-                    `;
-                    resultsDiv.innerHTML = '';
-                } else if (data.data && data.data.length > 0) {
-                    statusDiv.innerHTML = `
-                        <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; color: #2e7d2e; margin-top: 15px;">
-                            <strong>Query Successful:</strong> Found ${data.data.length} results
-                        </div>
-                    `;
-
-                    let tableHTML = '<table><thead><tr>';
-                    data.columns.forEach(column => {
-                        tableHTML += `<th>${column}</th>`;
-                    });
-                    tableHTML += '</tr></thead><tbody>';
-
-                    data.data.forEach(row => {
-                        tableHTML += '<tr>';
-                        data.columns.forEach(column => {
-                            tableHTML += `<td>${row[column] || ''}</td>`;
-                        });
-                        tableHTML += '</tr>';
-                    });
-                    tableHTML += '</tbody></table>';
-
-                    resultsDiv.innerHTML = tableHTML;
-                } else {
-                    statusDiv.innerHTML = `
-                        <div style="background: #fff3cd; padding: 15px; border-radius: 8px; color: #856404; margin-top: 15px;">
-                            <strong>Query Successful:</strong> No results found for this query
-                        </div>
-                    `;
-                    resultsDiv.innerHTML = '';
-                }
-
-                // Reset button
-                document.getElementById('executeQueryBtn').innerHTML = 'Execute Custom Query';
-                document.getElementById('executeQueryBtn').disabled = false;
-            })
-            .catch(error => {
-                document.getElementById('athenaStatus').innerHTML = `
-                    <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
-                        <strong>Error:</strong> ${error}
-                    </div>
-                `;
-                document.getElementById('executeQueryBtn').innerHTML = 'Execute Custom Query';
-                document.getElementById('executeQueryBtn').disabled = false;
-            });
-        });
     </script>
 </body>
 </html>

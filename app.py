@@ -91,7 +91,7 @@ Be specific, actionable, and helpful."""
     except Exception as e:
         return f"Error: {str(e)}"
 
-def search_jira_tickets(query, limit=3):
+def search_jira_tickets(query, limit=5):
     """Search JIRA tickets using API with improved error handling"""
     try:
         if not JIRA_TOKEN or not JIRA_EMAIL:
@@ -136,7 +136,7 @@ def search_jira_tickets(query, limit=3):
 
     return []
 
-def search_confluence_docs(query, limit=3):
+def search_confluence_docs(query, limit=5):
     """Search Confluence pages using API with improved error handling"""
     try:
         if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
@@ -156,28 +156,15 @@ def search_confluence_docs(query, limit=3):
         # Search both title and text for the full query AND individual keywords
         query_clean = query.strip()
 
-        # Build a comprehensive CQL query that searches broadly
-        search_conditions = []
-
-        # Search for the exact phrase first
-        search_conditions.append(f'title ~ "{query_clean}"')
-        search_conditions.append(f'text ~ "{query_clean}"')
-
-        # Also search for individual important keywords
-        keywords = query_clean.lower().split()
-        for keyword in keywords:
-            if len(keyword.strip()) > 2:  # Skip very short words
-                search_conditions.append(f'title ~ "{keyword.strip()}"')
-                search_conditions.append(f'text ~ "{keyword.strip()}"')
-
-        # Use OR to get maximum coverage - let relevance scoring handle ranking
-        cql_query = f'type = "page" AND ({" OR ".join(search_conditions)})'
+        # Build focused CQL query that prioritizes exact phrase matches
+        # Start with exact phrase search for better relevance
+        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
 
         logger.info(f"Confluence CQL query: {cql_query}")
 
         response = requests.get(url, headers=headers, params={
             'cql': cql_query,
-            'limit': 20,  # Get many more results to find truly relevant ones
+            'limit': 15,  # Get reasonable number of results
             'expand': 'space'
         }, timeout=15)
 
@@ -262,7 +249,7 @@ def search_confluence_docs(query, limit=3):
 
     return []
 
-def search_zendesk_tickets(query, limit=3):
+def search_zendesk_tickets(query, limit=5):
     """Search Zendesk tickets using API with improved error handling"""
     try:
         if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN:
@@ -288,7 +275,9 @@ def search_zendesk_tickets(query, limit=3):
 
         response = requests.get(url, headers=headers, params={
             'query': f'{query} type:ticket',
-            'per_page': limit
+            'per_page': limit,
+            'sort_by': 'relevance',
+            'sort_order': 'desc'
         }, timeout=15)
 
         if response.status_code == 200:
@@ -332,7 +321,7 @@ def search_help_docs(query, limit=3):
             search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
             response = requests.get(search_url, headers=headers, params={
                 'query': query,
-                'per_page': 10  # Get more results to find all relevant articles
+                'per_page': 5  # Good balance for Help Center
             }, timeout=15)
 
             if response.status_code == 200:

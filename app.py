@@ -149,28 +149,20 @@ def search_confluence_docs(query, limit=5):
             'Accept': 'application/json'
         }
 
-        # Try content search API instead - often gives better results
+        # Use search API for better relevance scoring
+        url = f"{CONFLUENCE_URL}/rest/api/search"
         query_clean = query.strip()
-        url = f"{CONFLUENCE_URL}/rest/api/content/search"
 
-        logger.info(f"Confluence content search query: {query_clean}")
+        # Simple CQL query
+        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
+
+        logger.info(f"Confluence CQL query: {cql_query}")
 
         response = requests.get(url, headers=headers, params={
-            'cql': f'type=page and title ~ "{query_clean}"',  # Search titles first
+            'cql': cql_query,
             'limit': 20,
-            'expand': 'space,version'
+            'expand': 'space'
         }, timeout=15)
-
-        # If title search doesn't work well, try text search as fallback
-        if response.status_code == 200:
-            data = response.json()
-            if len(data.get('results', [])) < 3:  # Not enough title results
-                logger.info(f"Trying Confluence text search as fallback")
-                response = requests.get(url, headers=headers, params={
-                    'cql': f'type=page and text ~ "{query_clean}"',  # Fallback to text search
-                    'limit': 20,
-                    'expand': 'space,version'
-                }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
@@ -198,40 +190,13 @@ def search_confluence_docs(query, limit=5):
                 title_word_matches = sum(1 for word in query_words if len(word) > 2 and word in title_lower)
                 relevance_score += title_word_matches * 20
 
-                # No filtering - just sort by relevance to put best results first
-                # Let the sorting handle relevance instead of filtering
-
-                # Debug logging to see what we're getting
-                logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")
-
-                # Debug: log all available fields to understand the response structure
-                logger.info(f"Confluence result fields: {list(result.keys())}")
-                if '_links' in result:
-                    logger.info(f"Available links: {result['_links'].keys()}")
-
-                # Try to get the direct URL from the API response first
-                full_url = result.get('url', '')
-
-                if full_url:
-                    logger.info(f"Using direct API URL: {full_url}")
+                # Simple URL construction - just use the page ID if available
+                if page_id:
+                    full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
                 else:
-                    # Fallback to URL construction
-                    web_link = result.get('_links', {}).get('webui', '')
-                    if web_link:
-                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}{web_link}"
-                        logger.info(f"Using webui link: {full_url}")
-                    elif space_key and page_id:
-                        full_url = f"{CONFLUENCE_URL.replace('/wiki', '').rstrip('/')}/wiki/spaces/{space_key}/pages/{page_id}"
-                        logger.info(f"Using constructed URL: {full_url}")
-                    else:
-                        # Create a search URL as last resort
-                        encoded_title = title.replace(' ', '+').replace('?', '')
-                        full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
-                        logger.info(f"Using search fallback: {full_url}")
-
-                if not full_url:
-                    logger.warning(f"Could not construct URL for Confluence result '{title}'")
-                    continue
+                    # Fallback to search URL
+                    encoded_title = title.replace(' ', '%20')
+                    full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
 
                 scored_results.append({
                     'title': title,

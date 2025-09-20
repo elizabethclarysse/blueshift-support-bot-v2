@@ -25,7 +25,7 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift expert. Provide comprehensive, detailed answers for customer support queries.
+        prompt = f"""You are a Blueshift expert. Provide comprehensive, detailed answers for support queries.
 
 {query}
 
@@ -281,45 +281,77 @@ IMPORTANT: You must ONLY use the actual table names listed above. Do not use gen
 
 Generate a SIMPLE troubleshooting SQL query for AWS Athena based on the user's question.
 
-Analyze the user query and create an appropriate query. Examples:
+Common query patterns for different support issues:
 
-For ERROR/FAILURE queries:
+For USER-SPECIFIC MESSAGING queries (why didn't user get messaged, user journey analysis):
+SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
+AND user_uuid = 'USER_UUID_HERE'
+AND file_date >= '2024-12-01'
+ORDER BY timestamp ASC
+
+For ERROR/FAILURE analysis:
 SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
 AND log_level = 'ERROR'
-AND message LIKE '%ExternalFetchError%'
-AND file_date >= '2024-08-01'
+AND file_date >= '2024-12-01'
 ORDER BY timestamp ASC
 LIMIT 100
 
-For CAMPAIGN PERFORMANCE queries:
-SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+For DEDUPLICATION issues:
+SELECT user_uuid, campaign_uuid, message
 FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-AND log_level IN ('INFO', 'SUCCESS')
-AND file_date >= '2024-08-01'
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND (message LIKE '%dedup%' OR message LIKE '%duplicate%' OR message LIKE '%skipping%')
+AND file_date >= '2024-12-01'
 ORDER BY timestamp ASC
-LIMIT 100
 
-For DELIVERY queries:
-SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+For CHANNEL LIMIT errors:
+SELECT COUNT(DISTINCT(user_uuid))
 FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-AND message LIKE '%delivered%'
-AND file_date >= '2024-08-01'
-ORDER BY timestamp ASC
-LIMIT 100
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
+AND message LIKE '%CampaignExecutionErrors::ChannelLimitError%'
+AND file_date >= '2024-12-01'
+
+For SOFT BOUNCE analysis:
+SELECT timestamp, user_uuid, campaign_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
+AND message LIKE '%soft_bounce%'
+AND file_date >= '2024-12-01'
+ORDER BY timestamp DESC
+LIMIT 10
+
+For JSON extraction (email delivery details):
+SELECT
+    json_extract_scalar(message, '$.action') AS action,
+    json_extract_scalar(message, '$.email') AS email,
+    json_extract_scalar(message, '$.user_uuid') AS user_uuid,
+    json_extract_scalar(message, '$.reason') AS reason
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'ACCOUNT_UUID_HERE'
+AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
+AND message LIKE '%soft_bounce%'
+AND file_date >= '2024-12-01'
 
 Key rules:
-1. Keep it simple - basic SELECT with simple WHERE clauses only
-2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
-3. ALWAYS include: WHERE account_uuid = '11d490bf-b250-4749-abf4-b6197620a985' (required for all queries)
-4. Choose appropriate log_level based on query type (ERROR for failures, INFO/SUCCESS for performance, etc.)
-5. Add specific message LIKE filters when relevant to the user's question
-6. Always include: WHERE file_date >= '2024-08-01' for recent data
-7. Always include: ORDER BY timestamp ASC LIMIT 100
-8. No complex functions, no TIMESTAMP(), no date calculations - keep it basic
+1. Use realistic placeholders: ACCOUNT_UUID_HERE, CAMPAIGN_UUID_HERE, USER_UUID_HERE
+2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, execution_key, transaction_uuid, worker_name
+3. Always include account_uuid filter (required for all queries)
+4. For user-specific queries: Include user_uuid and campaign_uuid filters
+5. For error analysis: Use log_level = 'ERROR' and specific message patterns
+6. For counting queries: Use COUNT(DISTINCT(user_uuid)) pattern
+7. Use recent dates: file_date >= '2024-12-01'
+8. Common message patterns: '%dedup%', '%ChannelLimitError%', '%soft_bounce%', '%ExternalFetchError%'
+9. Order by timestamp ASC for chronological analysis
+10. Use JSON extraction for delivery details: json_extract_scalar(message, '$.field')
+11. Include proper LIMIT clauses (10-100 for data queries)
 
 If the available tables list is empty, create a simple SHOW TABLES query instead.
 
@@ -1043,7 +1075,7 @@ MAIN_TEMPLATE = '''
             document.getElementById('athenaExplanation').textContent = athenaData.explanation;
 
             // Set editable SQL query
-            document.getElementById('editableQuery').value = athenaData.sql_query;
+            document.getElementById('suggestedQuery').value = athenaData.sql_query;
 
             // Clear previous results
             document.getElementById('athenaStatus').innerHTML = '';

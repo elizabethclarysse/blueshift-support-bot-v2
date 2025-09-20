@@ -190,26 +190,26 @@ def search_confluence_docs(query, limit=3):
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
-                # Use Confluence's own relevance score first, then enhance it
+                # Trust Confluence API's relevance scoring - it knows content, not just titles
                 api_score = result.get('score', 0)
-                relevance_score = api_score * 100  # Scale up API score
 
-                # Add our own relevance scoring on top
+                # Use API score as primary relevance (it considers full content, not just titles)
+                relevance_score = api_score if api_score > 0 else 0.1
+
+                # Add small bonuses for title matches, but don't require them
                 title_lower = title.lower()
                 query_lower = query.lower()
 
-                # Exact phrase match in title (highest bonus)
+                # Bonus for exact phrase match in title
                 if query_lower in title_lower:
-                    relevance_score += 1000
+                    relevance_score += 10
 
-                # Count how many query words appear in title
+                # Bonus for individual words in title
                 query_words_in_query = query_lower.split()
                 words_in_title = sum(1 for word in query_words_in_query if word.strip() in title_lower)
-                relevance_score += words_in_title * 100
+                relevance_score += words_in_title * 2
 
-                # If no meaningful matches, use minimal score
-                if relevance_score < 10:
-                    relevance_score = 1
+                # Don't filter out any results - let API decide what's relevant
 
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")
@@ -332,7 +332,7 @@ def search_help_docs(query, limit=3):
             search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
             response = requests.get(search_url, headers=headers, params={
                 'query': query,
-                'per_page': limit
+                'per_page': 10  # Get more results to find all relevant articles
             }, timeout=15)
 
             if response.status_code == 200:

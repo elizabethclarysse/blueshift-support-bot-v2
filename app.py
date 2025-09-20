@@ -56,87 +56,194 @@ Be specific, actionable, and helpful."""
     except Exception as e:
         return f"Error: {str(e)}"
 
+# API Configuration for searches
+JIRA_URL = os.environ.get('JIRA_URL', 'https://blueshift.atlassian.net')
+JIRA_API_TOKEN = os.environ.get('JIRA_API_TOKEN')
+JIRA_EMAIL = os.environ.get('JIRA_EMAIL')
+
+CONFLUENCE_URL = os.environ.get('CONFLUENCE_URL', 'https://blueshift.atlassian.net/wiki')
+CONFLUENCE_API_TOKEN = os.environ.get('CONFLUENCE_API_TOKEN')
+CONFLUENCE_EMAIL = os.environ.get('CONFLUENCE_EMAIL')
+
+ZENDESK_URL = os.environ.get('ZENDESK_URL', 'https://blueshiftsuccess.zendesk.com')
+ZENDESK_API_TOKEN = os.environ.get('ZENDESK_API_TOKEN')
+ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
+
+HELP_CENTER_URL = os.environ.get('HELP_CENTER_URL', 'https://help.blueshift.com')
+
+def search_jira_tickets(query, limit=3):
+    """Search JIRA tickets using actual API"""
+    try:
+        if not JIRA_API_TOKEN:
+            print("JIRA API token not configured")
+            return []
+
+        import base64
+        auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
+
+        headers = {
+            'Authorization': f'Basic {auth}',
+            'Accept': 'application/json'
+        }
+
+        # JQL query for text search
+        jql = f'text ~ "{query}" ORDER BY updated DESC'
+        url = f"{JIRA_URL}/rest/api/3/search"
+
+        response = requests.get(url, headers=headers, params={
+            'jql': jql,
+            'maxResults': limit,
+            'fields': 'summary,key,status'
+        }, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for issue in data.get('issues', []):
+                results.append({
+                    'title': f"{issue['key']}: {issue['fields']['summary']}",
+                    'url': f"{JIRA_URL}/browse/{issue['key']}"
+                })
+            return results
+        else:
+            print(f"JIRA API error: {response.status_code}")
+    except Exception as e:
+        print(f"JIRA search error: {e}")
+
+    return []
+
+def search_confluence_docs(query, limit=3):
+    """Search Confluence using actual API"""
+    try:
+        if not CONFLUENCE_API_TOKEN:
+            print("Confluence API token not configured")
+            return []
+
+        import base64
+        auth = base64.b64encode(f"{CONFLUENCE_EMAIL}:{CONFLUENCE_API_TOKEN}".encode()).decode()
+
+        headers = {
+            'Authorization': f'Basic {auth}',
+            'Accept': 'application/json'
+        }
+
+        url = f"{CONFLUENCE_URL}/rest/api/content/search"
+        response = requests.get(url, headers=headers, params={
+            'cql': f'text ~ "{query}" and type = page',
+            'limit': limit
+        }, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for page in data.get('results', []):
+                results.append({
+                    'title': page['title'],
+                    'url': f"{CONFLUENCE_URL}{page['_links']['webui']}"
+                })
+            return results
+        else:
+            print(f"Confluence API error: {response.status_code}")
+    except Exception as e:
+        print(f"Confluence search error: {e}")
+
+    return []
+
+def search_zendesk_tickets(query, limit=3):
+    """Search Zendesk using actual API"""
+    try:
+        if not ZENDESK_API_TOKEN:
+            print("Zendesk API token not configured")
+            return []
+
+        headers = {
+            'Authorization': f'Bearer {ZENDESK_API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+
+        url = f"{ZENDESK_URL}/api/v2/search.json"
+        response = requests.get(url, headers=headers, params={
+            'query': f'type:ticket {query}',
+            'per_page': limit
+        }, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for result in data.get('results', []):
+                results.append({
+                    'title': result['subject'],
+                    'url': result['url']
+                })
+            return results
+        else:
+            print(f"Zendesk API error: {response.status_code}")
+    except Exception as e:
+        print(f"Zendesk search error: {e}")
+
+    return []
+
+def search_help_docs(query, limit=3):
+    """Search Blueshift Help Center using actual API"""
+    try:
+        # Use Zendesk Help Center API
+        url = f"{HELP_CENTER_URL}/api/v2/help_center/articles/search.json"
+        response = requests.get(url, params={
+            'query': query,
+            'per_page': limit
+        }, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for article in data.get('results', []):
+                results.append({
+                    'title': article['title'],
+                    'url': article['html_url']
+                })
+            return results
+        else:
+            print(f"Help docs API error: {response.status_code}")
+    except Exception as e:
+        print(f"Help docs search error: {e}")
+
+    return []
+
 def generate_related_resources(query):
-    """Generate contextually relevant resources"""
+    """Generate contextually relevant resources using actual API searches"""
+    print(f"Searching for: {query}")
 
-    # Verified working Blueshift help URLs
-    all_help_docs = {
-        'platform': [
-            {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-            {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-            {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633"}
-        ],
-        'campaigns': [
-            {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893"}
-        ],
-        'integration': [
-            {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"},
-            {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853"},
-            {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773"}
-        ],
-        'analytics': [
-            {"title": "Analytics Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Data Export", "url": "https://help.blueshift.com/hc/en-us/articles/115002726694"}
+    # Perform actual searches using APIs
+    help_docs = search_help_docs(query)
+    confluence_docs = search_confluence_docs(query)
+    jira_tickets = search_jira_tickets(query)
+    support_tickets = search_zendesk_tickets(query)
+
+    # Fallback to some static results if searches fail
+    if not help_docs:
+        help_docs = [
+            {"title": "Search Help Center", "url": f"https://help.blueshift.com/hc/en-us/search?query={query.replace(' ', '+')}"},
         ]
-    }
 
-    # Select help docs (simplified selection for exact copy)
-    selected_help_docs = all_help_docs['platform'][:3]
+    if not confluence_docs:
+        confluence_docs = [
+            {"title": "Search Confluence", "url": f"https://blueshift.atlassian.net/wiki/search?text={query.replace(' ', '%20')}"},
+        ]
 
-    # Confluence docs - real pages
-    confluence_docs = [
-        {
-            "title": "Campaign Fundamentals",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
-        },
-        {
-            "title": "Confluence Search",
-            "url": f"https://blueshift.atlassian.net/wiki/search?text={query.replace(' ', '%20')[:50]}"
-        },
-        {
-            "title": "Customer Engineering Space",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE"
-        }
-    ]
+    if not jira_tickets:
+        jira_tickets = [
+            {"title": "Search JIRA", "url": f'https://blueshift.atlassian.net/issues/?jql=text~"{query.replace(" ", "%20")}"'},
+        ]
 
-    # Support tickets - real search
-    support_tickets = [
-        {
-            "title": "Zendesk Search",
-            "url": f"https://blueshiftsuccess.zendesk.com/agent/search/1?type=ticket&q={query.replace(' ', '%20')[:50]}"
-        },
-        {
-            "title": "Recent Tickets",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets"
-        },
-        {
-            "title": "Open Tickets",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/filters/360094648654"
-        }
-    ]
+    if not support_tickets:
+        support_tickets = [
+            {"title": "Search Zendesk", "url": f"https://blueshiftsuccess.zendesk.com/hc/en-us/search?query={query.replace(' ', '+')}"},
+        ]
 
-    # JIRA tickets - functional searches
-    query_encoded = query.replace(' ', '%20')[:50]
-    jira_tickets = [
-        {
-            "title": "JIRA Text Search",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=text~\"{query_encoded}\""
-        },
-        {
-            "title": "Recent Issues",
-            "url": "https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
-        },
-        {
-            "title": "Open Issues",
-            "url": "https://blueshift.atlassian.net/issues/?jql=status!=Done"
-        }
-    ]
+    print(f"Found: {len(help_docs)} help docs, {len(confluence_docs)} confluence docs, {len(jira_tickets)} jira tickets, {len(support_tickets)} support tickets")
 
     return {
-        'help_docs': selected_help_docs,
+        'help_docs': help_docs,
         'confluence_docs': confluence_docs,
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets

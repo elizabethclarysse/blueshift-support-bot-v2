@@ -306,9 +306,12 @@ def parse_athena_analysis(ai_response, user_query):
                 if line in ATHENA_DATABASES:
                     database_name = line
             elif in_sql_section and line:
-                sql_query += line + "\n"
+                # Clean up markdown formatting
+                cleaned_line = line.replace('```sql', '').replace('```', '').strip()
+                if cleaned_line:  # Only add non-empty lines
+                    sql_query += cleaned_line + "\n"
             elif in_explanation_section and line:
-                explanation += line + " "
+                explanation += line + "\n"
 
         # Execute the query if we have one
         if sql_query.strip():
@@ -753,7 +756,8 @@ MAIN_TEMPLATE = '''
             <div id="athenaSection" class="athena-section" style="display: none;">
                 <h3>📊 Data Insights <span class="athena-badge">ATHENA</span></h3>
                 <p><strong>Database:</strong> <span id="athenaDatabase" style="font-family: monospace; background: #f0f0f0; padding: 2px 6px; border-radius: 4px;"></span></p>
-                <p><strong>Analysis:</strong> <span id="athenaExplanation"></span></p>
+                <div><strong>Analysis:</strong></div>
+                <div id="athenaExplanation" style="white-space: pre-line; margin-top: 8px; line-height: 1.6;"></div>
 
                 <details>
                     <summary style="cursor: pointer; color: #2790FF; font-weight: bold;">View SQL Query</summary>

@@ -315,7 +315,7 @@ SELECT COUNT(DISTINCT(user_uuid))
 FROM customer_campaign_logs.campaign_execution_v3
 WHERE account_uuid = 'ACCOUNT_UUID_HERE'
 AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
-AND message LIKE '%CampaignExecutionErrors::ChannelLimitError%'
+AND message LIKE '%channel messaging limits hit%'
 AND file_date >= '2024-12-01'
 
 For SOFT BOUNCE analysis:
@@ -348,7 +348,7 @@ Key rules:
 5. For error analysis: Use log_level = 'ERROR' and specific message patterns
 6. For counting queries: Use COUNT(DISTINCT(user_uuid)) pattern
 7. Use recent dates: file_date >= '2024-12-01'
-8. Common message patterns: '%dedup%', '%ChannelLimitError%', '%soft_bounce%', '%ExternalFetchError%'
+8. Common message patterns: '%dedup%', '%channel messaging limits hit%', '%soft_bounce%', '%ExternalFetchError%', '%NotEnoughRecommendationProductsError%'
 9. Order by timestamp ASC for chronological analysis
 10. Use JSON extraction for delivery details: json_extract_scalar(message, '$.field')
 11. Include proper LIMIT clauses (10-100 for data queries)
@@ -1077,9 +1077,6 @@ MAIN_TEMPLATE = '''
             // Set editable SQL query
             document.getElementById('suggestedQuery').value = athenaData.sql_query;
 
-            // Clear previous results
-            document.getElementById('athenaStatus').innerHTML = '';
-            document.getElementById('athenaResults').innerHTML = '';
         }
 
     </script>

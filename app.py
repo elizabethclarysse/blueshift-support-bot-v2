@@ -12,7 +12,7 @@ app = Flask(__name__)
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
 # AWS Athena configuration - set these via environment variables
-ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'blueshift_data').split(',')
+ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
 ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://blueshift-athena-results/')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 
@@ -206,9 +206,30 @@ def query_athena(query_string, database_name, query_description="Athena query"):
         print(f"Athena query error: {e}")
         return {"error": str(e), "data": []}
 
+def get_available_tables(database_name):
+    """Get list of available tables in the database"""
+    try:
+        # Get a sample of tables to help AI understand the schema
+        show_tables_query = f"SHOW TABLES IN {database_name}"
+        result = query_athena(show_tables_query, database_name, "Get table list")
+
+        if result.get('data'):
+            # Return first 50 tables as a sample (to avoid overwhelming the AI)
+            tables = [row[result['columns'][0]] for row in result['data'][:50]]
+            return tables
+        return []
+    except Exception as e:
+        print(f"Error getting tables: {e}")
+        return []
+
 def generate_athena_insights(user_query):
     """Generate data insights using Athena queries based on user query"""
     try:
+        # Get available tables first
+        database_name = ATHENA_DATABASES[0]  # Use first database
+        available_tables = get_available_tables(database_name)
+        table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3, and other tables"
+
         # Use AI to determine what kind of data query would be helpful
         headers = {
             'x-api-key': AI_API_KEY,
@@ -219,38 +240,47 @@ def generate_athena_insights(user_query):
         database_list = ', '.join(ATHENA_DATABASES)
         analysis_prompt = f"""Analyze this Blueshift support query: "{user_query}"
 
-Available databases: {database_list}
+Available tables in {database_name}: {table_list}
 
-Based on this query, determine what kind of data analysis would be most helpful. Consider these areas:
-- Campaign performance metrics
-- Email delivery and engagement rates
-- User behavior and segmentation data
-- Revenue and conversion analytics
-- Platform usage statistics
+IMPORTANT: You must ONLY use the actual table names listed above. Do not use generic names.
 
-Generate a relevant SQL query for AWS Athena that would provide insights related to this support query.
-Choose the most appropriate database from the available options.
-Assume typical marketing automation tables like:
-- campaigns (campaign_id, name, status, created_date, campaign_type)
-- emails (email_id, campaign_id, sent_date, opens, clicks, bounces)
-- users (user_id, email, signup_date, last_active, segment)
-- events (event_id, user_id, event_type, timestamp, properties)
-- revenue (user_id, order_date, amount, campaign_id)
+Generate a practical troubleshooting SQL query for AWS Athena that would help diagnose this support issue. Focus on queries that would:
+- Find error logs and failure messages
+- Check campaign execution status and timing
+- Identify delivery issues or API problems
+- Track user engagement or conversion problems
+- Monitor system performance or data issues
+
+Example troubleshooting patterns for campaign_execution_v3:
+- Error analysis: WHERE log_level = 'ERROR' AND message LIKE '%ErrorType%'
+- Time-based filtering: WHERE file_date >= 'YYYY-MM-DD' AND timestamp_millis >= TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
+- Account-specific: WHERE account_uuid = 'uuid-value'
+- Campaign tracking: WHERE campaign_uuid = 'uuid-value'
+
+The query should:
+1. Only use tables that exist in the available tables list above
+2. Include relevant WHERE clauses to filter for the specific issue
+3. Use appropriate time filters with file_date and timestamp_millis columns
+4. Select key diagnostic fields like timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+5. Order results logically (usually by timestamp)
+6. Focus on the most relevant table (like campaign_execution_v3 for most support issues)
+
+If the available tables list is empty, create a simple SHOW TABLES query instead.
 
 Provide:
 1. The best database to use
-2. A relevant SQL query (max 10 lines)
-3. A brief explanation of what insights this would provide
+2. A practical troubleshooting SQL query using ONLY the actual available table names
+3. A brief explanation of what this query would help diagnose
 
 Format:
 DATABASE:
 [chosen database name]
 
 SQL_QUERY:
-[your SQL query here]
+[your troubleshooting SQL query using only actual table names from the list above]
 
 INSIGHT_EXPLANATION:
-[brief explanation]"""
+[brief explanation of what this query helps diagnose]"""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -332,25 +362,15 @@ def parse_athena_analysis(ai_response, user_query):
 
 def get_default_athena_insights(user_query):
     """Provide default Athena insights when AI analysis fails"""
-    # Provide a simple, safe query as fallback
-    default_query = """
-SELECT
-    campaign_type,
-    COUNT(*) as campaign_count,
-    AVG(CAST(opens as DOUBLE)) as avg_opens
-FROM campaigns c
-LEFT JOIN emails e ON c.campaign_id = e.campaign_id
-WHERE c.created_date >= date_add('day', -30, current_date)
-GROUP BY campaign_type
-ORDER BY campaign_count DESC
-LIMIT 10
-"""
+    # Use a simple, safe query that works with any database
+    database_name = ATHENA_DATABASES[0]
+    default_query = f"SHOW TABLES IN {database_name}"
 
     return {
-        'database': ATHENA_DATABASES[0],
-        'sql_query': default_query.strip(),
-        'explanation': f'Campaign performance overview for the last 30 days related to: {user_query}',
-        'results': {"data": [], "columns": [], "note": "Sample query - configure AWS credentials to execute"},
+        'database': database_name,
+        'sql_query': default_query,
+        'explanation': f'Showing available tables in database "{database_name}" to help analyze: {user_query}',
+        'results': {"data": [], "columns": [], "note": "Query will show available tables when AWS credentials are configured"},
         'has_data': False
     }
 

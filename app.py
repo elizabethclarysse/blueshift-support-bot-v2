@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 import time
 import base64
+import logging
 
 app = Flask(__name__)
 
@@ -19,16 +20,20 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
 # API Configuration for searches
 JIRA_URL = os.environ.get('JIRA_URL', 'https://blueshift.atlassian.net')
-JIRA_API_TOKEN = os.environ.get('JIRA_TOKEN')  # Fixed: was JIRA_API_TOKEN
+JIRA_TOKEN = os.environ.get('JIRA_TOKEN')
 JIRA_EMAIL = os.environ.get('JIRA_EMAIL')
 
 CONFLUENCE_URL = os.environ.get('CONFLUENCE_URL', 'https://blueshift.atlassian.net/wiki')
-CONFLUENCE_API_TOKEN = os.environ.get('CONFLUENCE_TOKEN')  # Fixed: was CONFLUENCE_API_TOKEN
+CONFLUENCE_TOKEN = os.environ.get('CONFLUENCE_TOKEN')
 CONFLUENCE_EMAIL = os.environ.get('CONFLUENCE_EMAIL')
 
 ZENDESK_SUBDOMAIN = os.environ.get('ZENDESK_SUBDOMAIN')
 ZENDESK_TOKEN = os.environ.get('ZENDESK_TOKEN')
 ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
+
+# Configure logging for production debugging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def call_anthropic_api(query):
     """Call Anthropic Claude API for high-quality responses"""
@@ -71,20 +76,20 @@ Be specific, actionable, and helpful."""
         return f"Error: {str(e)}"
 
 def search_jira_tickets(query, limit=3):
-    """Search JIRA tickets using actual API"""
+    """Search JIRA tickets using API with improved error handling"""
     try:
-        if not JIRA_API_TOKEN or not JIRA_EMAIL:
-            print("JIRA API token or email not configured")
+        if not JIRA_TOKEN or not JIRA_EMAIL:
+            logger.warning("JIRA credentials not configured - using fallback")
             return []
 
-        auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
-
+        auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
         headers = {
             'Authorization': f'Basic {auth}',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
         }
 
-        # JQL query for text search
+        # Use simple JQL search
         jql = f'text ~ "{query}" ORDER BY updated DESC'
         url = f"{JIRA_URL}/rest/api/3/search"
 
@@ -92,7 +97,7 @@ def search_jira_tickets(query, limit=3):
             'jql': jql,
             'maxResults': limit,
             'fields': 'summary,key,status'
-        }, timeout=10)
+        }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
@@ -102,61 +107,58 @@ def search_jira_tickets(query, limit=3):
                     'title': f"{issue['key']}: {issue['fields']['summary']}",
                     'url': f"{JIRA_URL}/browse/{issue['key']}"
                 })
-            print(f"JIRA search found {len(results)} results")
+            logger.info(f"JIRA search found {len(results)} results")
             return results
         else:
-            print(f"JIRA API error: {response.status_code} - {response.text[:200]}")
+            logger.error(f"JIRA API error: {response.status_code} - {response.text[:200]}")
     except Exception as e:
-        print(f"JIRA search error: {e}")
+        logger.error(f"JIRA search error: {e}")
 
     return []
 
 def search_confluence_docs(query, limit=3):
-    """Search Confluence pages using actual API"""
+    """Search Confluence pages using API with improved error handling"""
     try:
-        if not CONFLUENCE_API_TOKEN or not CONFLUENCE_EMAIL:
-            print("Confluence API token or email not configured")
+        if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
+            logger.warning("Confluence credentials not configured - using fallback")
             return []
 
-        auth = base64.b64encode(f"{CONFLUENCE_EMAIL}:{CONFLUENCE_API_TOKEN}".encode()).decode()
-
+        auth = base64.b64encode(f"{CONFLUENCE_EMAIL}:{CONFLUENCE_TOKEN}".encode()).decode()
         headers = {
             'Authorization': f'Basic {auth}',
             'Accept': 'application/json'
         }
 
-        # Search API endpoint
-        url = f"{CONFLUENCE_URL}/rest/api/search"
+        # Use the content search API
+        url = f"{CONFLUENCE_URL}/rest/api/content/search"
 
         response = requests.get(url, headers=headers, params={
-            'cql': f'text ~ "{query}"',
+            'cql': f'text ~ "{query}" and type = "page"',
             'limit': limit
-        }, timeout=10)
+        }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
             results = []
             for result in data.get('results', []):
-                if result.get('content'):
-                    content = result['content']
-                    results.append({
-                        'title': content.get('title', 'Untitled'),
-                        'url': f"{CONFLUENCE_URL}{content.get('_links', {}).get('webui', '')}"
-                    })
-            print(f"Confluence search found {len(results)} results")
+                results.append({
+                    'title': result.get('title', 'Untitled'),
+                    'url': f"{CONFLUENCE_URL.replace('/wiki', '')}{result.get('_links', {}).get('webui', '')}"
+                })
+            logger.info(f"Confluence search found {len(results)} results")
             return results
         else:
-            print(f"Confluence API error: {response.status_code} - {response.text[:200]}")
+            logger.error(f"Confluence API error: {response.status_code} - {response.text[:200]}")
     except Exception as e:
-        print(f"Confluence search error: {e}")
+        logger.error(f"Confluence search error: {e}")
 
     return []
 
 def search_zendesk_tickets(query, limit=3):
-    """Search Zendesk tickets using actual API"""
+    """Search Zendesk tickets using API with improved error handling"""
     try:
-        if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN or not ZENDESK_EMAIL:
-            print("Zendesk API configuration not complete")
+        if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN:
+            logger.warning("Zendesk credentials not configured - using fallback")
             return []
 
         headers = {
@@ -168,9 +170,9 @@ def search_zendesk_tickets(query, limit=3):
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
 
         response = requests.get(url, headers=headers, params={
-            'query': query,
-            'type': 'ticket'
-        }, timeout=10)
+            'query': f'{query} type:ticket',
+            'per_page': limit
+        }, timeout=15)
 
         if response.status_code == 200:
             data = response.json()
@@ -180,85 +182,77 @@ def search_zendesk_tickets(query, limit=3):
                     'title': f"Ticket #{ticket['id']}: {ticket.get('subject', 'No Subject')}",
                     'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket['id']}"
                 })
-            print(f"Zendesk search found {len(results)} results")
+            logger.info(f"Zendesk search found {len(results)} results")
             return results
         else:
-            print(f"Zendesk API error: {response.status_code} - {response.text[:200]}")
+            logger.error(f"Zendesk API error: {response.status_code} - {response.text[:200]}")
     except Exception as e:
-        print(f"Zendesk search error: {e}")
+        logger.error(f"Zendesk search error: {e}")
 
     return []
 
 def search_help_docs(query, limit=3):
-    """Search Blueshift Help Center using actual API or fallback to curated list"""
-    try:
-        # Try to search via Help Center API if available
-        # For now, use curated list with intelligent selection
-        all_help_docs = {
-            'platform': [
-                {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-                {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-                {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633"}
-            ],
-            'campaigns': [
-                {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-                {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-                {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893"}
-            ],
-            'integration': [
-                {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"},
-                {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853"},
-                {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773"}
-            ],
-            'analytics': [
-                {"title": "Analytics Dashboard", "url": "https://help.blueshift.com/hc/en-us/articles/115002713613"},
-                {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713533"},
-                {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453"}
-            ]
-        }
-
-        # Simple keyword matching for relevant docs
-        query_lower = query.lower()
-        relevant_docs = []
-
-        # Check each category
-        for category, docs in all_help_docs.items():
-            for doc in docs:
-                if any(keyword in doc['title'].lower() or keyword in query_lower
-                      for keyword in ['campaign', 'integration', 'analytics', 'platform', 'api', 'sdk', 'tracking', 'report']):
-                    relevant_docs.append(doc)
-
-        # If no specific matches, return from campaigns (most common)
-        if not relevant_docs:
-            relevant_docs = all_help_docs['campaigns']
-
-        return relevant_docs[:limit]
-
-    except Exception as e:
-        print(f"Help docs search error: {e}")
-        # Fallback to basic docs
-        return [
-            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+    """Smart help doc selection from curated list"""
+    # Curated help docs with intelligent selection
+    all_help_docs = {
+        'platform': [
+            {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
+            {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
+            {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633"}
+        ],
+        'campaigns': [
             {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"}
+            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
+            {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893"}
+        ],
+        'integration': [
+            {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"},
+            {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853"},
+            {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773"}
+        ],
+        'analytics': [
+            {"title": "Analytics Dashboard", "url": "https://help.blueshift.com/hc/en-us/articles/115002713613"},
+            {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713533"},
+            {"title": "Event Tracking", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453"}
         ]
+    }
+
+    query_lower = query.lower()
+
+    # Smart category selection based on keywords
+    if any(kw in query_lower for kw in ['campaign', 'journey', 'trigger', 'message']):
+        return all_help_docs['campaigns'][:limit]
+    elif any(kw in query_lower for kw in ['api', 'sdk', 'integration', 'implement', 'setup']):
+        return all_help_docs['integration'][:limit]
+    elif any(kw in query_lower for kw in ['analytics', 'report', 'metric', 'data', 'track']):
+        return all_help_docs['analytics'][:limit]
+    else:
+        return all_help_docs['platform'][:limit]
 
 def generate_related_resources(query):
-    """Generate contextually relevant resources using API searches"""
-    print(f"Searching for: {query}")
+    """Generate contextually relevant resources using API searches with smart fallbacks"""
+    logger.info(f"Searching for resources: {query}")
 
-    # Perform actual API searches
+    # Perform API searches with proper error handling
     help_docs = search_help_docs(query, limit=3)
     confluence_docs = search_confluence_docs(query, limit=3)
     jira_tickets = search_jira_tickets(query, limit=3)
     support_tickets = search_zendesk_tickets(query, limit=3)
 
-    # If API searches fail, provide fallback search URLs
+    # Smart fallbacks if API searches return no results
     if not confluence_docs:
         confluence_docs = [
             {
+                "title": "Campaign Fundamentals",
+                "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
+            },
+            {
                 "title": "Confluence Search",
                 "url": f"https://blueshift.atlassian.net/wiki/search?text={query.replace(' ', '%20')[:50]}"
+            },
+            {
+                "title": "Customer Engineering Space",
+                "url": "https://blueshift.atlassian.net/wiki/spaces/CE"
             }
         ]
 
@@ -268,18 +262,39 @@ def generate_related_resources(query):
             {
                 "title": "JIRA Text Search",
                 "url": f"https://blueshift.atlassian.net/issues/?jql=text~\"{query_encoded}\""
+            },
+            {
+                "title": "Recent Issues",
+                "url": "https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
+            },
+            {
+                "title": "Open Issues",
+                "url": "https://blueshift.atlassian.net/issues/?jql=status!=Done"
             }
         ]
 
     if not support_tickets:
+        if ZENDESK_SUBDOMAIN:
+            zendesk_domain = f"{ZENDESK_SUBDOMAIN}.zendesk.com"
+        else:
+            zendesk_domain = "blueshiftsuccess.zendesk.com"  # fallback
+
         support_tickets = [
             {
                 "title": "Zendesk Search",
-                "url": f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/search/1?type=ticket&q={query.replace(' ', '%20')[:50]}"
+                "url": f"https://{zendesk_domain}/agent/search/1?type=ticket&q={query.replace(' ', '%20')[:50]}"
+            },
+            {
+                "title": "Recent Tickets",
+                "url": f"https://{zendesk_domain}/agent/tickets"
+            },
+            {
+                "title": "Open Tickets",
+                "url": f"https://{zendesk_domain}/agent/filters/360094648654"
             }
         ]
 
-    print(f"Found: {len(help_docs)} help docs, {len(confluence_docs)} confluence docs, {len(jira_tickets)} jira tickets, {len(support_tickets)} support tickets")
+    logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}")
 
     return {
         'help_docs': help_docs,

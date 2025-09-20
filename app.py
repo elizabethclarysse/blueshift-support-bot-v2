@@ -8,6 +8,13 @@ import time
 import base64
 import logging
 
+# Try to load .env file if it exists (for development/testing)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, continue without it
+
 app = Flask(__name__)
 
 # Use the correct Claude API key
@@ -34,6 +41,15 @@ ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
 # Configure logging for production debugging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Debug environment variables on startup
+logger.info(f"Environment variables loaded:")
+logger.info(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+logger.info(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
+logger.info(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+logger.info(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
+logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
 def call_anthropic_api(query):
     """Call Anthropic Claude API for high-quality responses"""
@@ -239,60 +255,7 @@ def generate_related_resources(query):
     jira_tickets = search_jira_tickets(query, limit=3)
     support_tickets = search_zendesk_tickets(query, limit=3)
 
-    # Smart fallbacks if API searches return no results
-    if not confluence_docs:
-        confluence_docs = [
-            {
-                "title": "Campaign Fundamentals",
-                "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
-            },
-            {
-                "title": "Confluence Search",
-                "url": f"https://blueshift.atlassian.net/wiki/search?text={query.replace(' ', '%20')[:50]}"
-            },
-            {
-                "title": "Customer Engineering Space",
-                "url": "https://blueshift.atlassian.net/wiki/spaces/CE"
-            }
-        ]
-
-    if not jira_tickets:
-        query_encoded = query.replace(' ', '%20')[:50]
-        jira_tickets = [
-            {
-                "title": "JIRA Text Search",
-                "url": f"https://blueshift.atlassian.net/issues/?jql=text~\"{query_encoded}\""
-            },
-            {
-                "title": "Recent Issues",
-                "url": "https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
-            },
-            {
-                "title": "Open Issues",
-                "url": "https://blueshift.atlassian.net/issues/?jql=status!=Done"
-            }
-        ]
-
-    if not support_tickets:
-        if ZENDESK_SUBDOMAIN:
-            zendesk_domain = f"{ZENDESK_SUBDOMAIN}.zendesk.com"
-        else:
-            zendesk_domain = "blueshiftsuccess.zendesk.com"  # fallback
-
-        support_tickets = [
-            {
-                "title": "Zendesk Search",
-                "url": f"https://{zendesk_domain}/agent/search/1?type=ticket&q={query.replace(' ', '%20')[:50]}"
-            },
-            {
-                "title": "Recent Tickets",
-                "url": f"https://{zendesk_domain}/agent/tickets"
-            },
-            {
-                "title": "Open Tickets",
-                "url": f"https://{zendesk_domain}/agent/filters/360094648654"
-            }
-        ]
+    # No fallbacks - return only actual API results
 
     logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}")
 

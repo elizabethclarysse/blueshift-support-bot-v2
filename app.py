@@ -190,26 +190,30 @@ def search_confluence_docs(query, limit=5):
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
-                # Trust Confluence API's relevance scoring - it knows content, not just titles
-                api_score = result.get('score', 0)
-
-                # Use API score as primary relevance (it considers full content, not just titles)
-                relevance_score = api_score if api_score > 0 else 0.1
-
-                # Add small bonuses for title matches, but don't require them
+                # Better relevance scoring that prioritizes query relevance
                 title_lower = title.lower()
                 query_lower = query.lower()
 
-                # Bonus for exact phrase match in title
+                # Start with API score but boost query-relevant results
+                api_score = result.get('score', 0)
+                relevance_score = api_score if api_score > 0 else 1.0
+
+                # Strong bonus for exact query match in title (most relevant)
                 if query_lower in title_lower:
-                    relevance_score += 10
+                    relevance_score += 100
 
-                # Bonus for individual words in title
-                query_words_in_query = query_lower.split()
-                words_in_title = sum(1 for word in query_words_in_query if word.strip() in title_lower)
-                relevance_score += words_in_title * 2
+                # Good bonus for query words in title
+                query_words = query_lower.split()
+                title_word_matches = sum(1 for word in query_words if len(word) > 2 and word in title_lower)
+                relevance_score += title_word_matches * 20
 
-                # Don't filter out any results - let API decide what's relevant
+                # Filter out clearly irrelevant results
+                # Only include if title has query relevance OR very high API score
+                has_title_relevance = query_lower in title_lower or title_word_matches > 0
+                has_high_api_score = api_score > 50  # High confidence from Confluence API
+
+                if not (has_title_relevance or has_high_api_score):
+                    continue  # Skip this result as likely irrelevant
 
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")

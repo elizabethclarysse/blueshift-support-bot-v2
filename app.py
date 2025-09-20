@@ -152,27 +152,32 @@ def search_confluence_docs(query, limit=3):
         # Use search API for better relevance scoring
         url = f"{CONFLUENCE_URL}/rest/api/search"
 
-        # Create a more targeted CQL query
-        query_words = [word.strip() for word in query.lower().split() if len(word.strip()) > 2]
+        # Use comprehensive search - let the API find ALL relevant pages
+        # Search both title and text for the full query AND individual keywords
+        query_clean = query.strip()
 
-        if len(query_words) > 1:
-            # For multi-word queries, use OR for broader results but score for relevance later
-            keyword_conditions = []
-            for word in query_words:
-                keyword_conditions.append(f'(title ~ "{word}" OR text ~ "{word}")')
+        # Build a comprehensive CQL query that searches broadly
+        search_conditions = []
 
-            # Use OR to get broader results, then score for relevance
-            cql_query = f'type = "page" AND ({" OR ".join(keyword_conditions)})'
-        else:
-            # Single word search
-            word = query_words[0] if query_words else query
-            cql_query = f'type = "page" AND (title ~ "{word}" OR text ~ "{word}")'
+        # Search for the exact phrase first
+        search_conditions.append(f'title ~ "{query_clean}"')
+        search_conditions.append(f'text ~ "{query_clean}"')
+
+        # Also search for individual important keywords
+        keywords = query_clean.lower().split()
+        for keyword in keywords:
+            if len(keyword.strip()) > 2:  # Skip very short words
+                search_conditions.append(f'title ~ "{keyword.strip()}"')
+                search_conditions.append(f'text ~ "{keyword.strip()}"')
+
+        # Use OR to get maximum coverage - let relevance scoring handle ranking
+        cql_query = f'type = "page" AND ({" OR ".join(search_conditions)})'
 
         logger.info(f"Confluence CQL query: {cql_query}")
 
         response = requests.get(url, headers=headers, params={
             'cql': cql_query,
-            'limit': limit * 2,  # Get more results to filter for relevance
+            'limit': 20,  # Get many more results to find truly relevant ones
             'expand': 'space'
         }, timeout=15)
 
@@ -185,22 +190,27 @@ def search_confluence_docs(query, limit=3):
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
-                # Calculate relevance score
+                # Calculate relevance score for any type of query
                 relevance_score = 0
                 title_lower = title.lower()
+                query_lower = query.lower()
 
-                # Score based on query word matches in title
-                for word in query_words:
-                    if word in title_lower:
-                        relevance_score += 10  # High score for title matches
+                # Exact phrase match in title (highest score)
+                if query_lower in title_lower:
+                    relevance_score += 50
 
-                # Bonus for exact phrase in title
-                if query.lower() in title_lower:
-                    relevance_score += 15
+                # Count how many query words appear in title
+                query_words_in_query = query_lower.split()
+                words_in_title = sum(1 for word in query_words_in_query if word.strip() in title_lower)
+                relevance_score += words_in_title * 10
 
-                # Skip results with very low relevance
+                # Longer titles with more matches get bonus
+                if len(query_words_in_query) > 1 and words_in_title > 1:
+                    relevance_score += words_in_title * 5
+
+                # Any match gets some base score (don't skip any results)
                 if relevance_score == 0:
-                    continue
+                    relevance_score = 1  # Give minimal score instead of skipping
 
                 # Debug logging to see what we're getting
                 logger.info(f"Confluence result: title='{title}', space='{space_key}', score={relevance_score}")

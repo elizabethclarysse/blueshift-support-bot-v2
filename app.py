@@ -263,12 +263,14 @@ IMPORTANT: Use standard Athena syntax only:
 - For timestamps use: TIMESTAMP '2025-08-26 15:30:00' format
 - For date comparisons use: file_date = '2025-08-26' (exact match)
 - Avoid CURRENT_TIMESTAMP, NOW(), CURRENT_DATE - use now() or specific dates instead
+- Do NOT invent column names - only use the known columns listed above
+- Follow the exact pattern of the working ExternalFetchError query example
 
 The query should:
 1. Only use tables that exist in the available tables list above
 2. Include relevant WHERE clauses to filter for the specific issue
 3. Use proper Athena syntax - avoid CURRENT_TIMESTAMP, use specific dates or now() function
-4. Select key diagnostic fields like timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+4. Select ONLY these known fields from campaign_execution_v3: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, timestamp_millis, account_uuid
 5. Order results logically (usually by timestamp)
 6. Focus on the most relevant table (like campaign_execution_v3 for most support issues)
 

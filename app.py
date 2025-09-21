@@ -136,8 +136,10 @@ def search_jira_tickets(query, limit=5):
 
     return []
 
-def search_confluence_docs(query, limit=5):
-    """Search Confluence pages using API - simple keyword search"""
+def search_confluence_docs(query, limit=5, space_key=None):
+    """
+    Search Confluence docs with improved relevance, label boosting, and fallback handling.
+    """
     try:
         if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
             logger.warning("Confluence credentials not configured - using fallback")
@@ -149,60 +151,101 @@ def search_confluence_docs(query, limit=5):
             'Accept': 'application/json'
         }
 
-        # Try different search approaches
+        # Build query strategy
+        words = query.strip().split()
+        if len(words) <= 2:
+            # Short queries → phrase search first
+            cql = f'title ~ "\\"{query}\\"" OR text ~ "\\"{query}\\""'
+        else:
+            # Multi-word queries → AND logic across words with label support
+            and_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR label = "{w}")' for w in words]
+            cql = " AND ".join(and_parts)
+
+        # Add space filter if provided
+        if space_key:
+            cql = f'space.key = "{space_key}" AND ({cql})'
+
         url = f"{CONFLUENCE_URL}/rest/api/search"
+        params = {
+            "cql": cql,
+            "limit": limit * 2,   # pull extra for re-ranking
+            "expand": "title,content.metadata.labels"
+        }
 
-        # Try exact text search first, then fallback to fuzzy
-        cql_queries = [
-            f'type = "page" AND (title contains "{query}" OR text contains "{query}")',
-            f'type = "page" AND text ~ "{query}"',
-            f'type = "page" AND title ~ "{query}"'
-        ]
+        logger.info(f"Confluence CQL query: {cql}")
 
-        results = []
+        response = requests.get(
+            url,
+            params=params,
+            auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN),
+            timeout=15
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
 
-        # Try each query until we get results
-        for i, cql_query in enumerate(cql_queries):
-            logger.info(f"Confluence CQL query {i+1}: {cql_query}")
+        # Re-rank results
+        ranked = sorted(results, key=lambda r: calculate_relevance_score(r, query), reverse=True)
 
-            response = requests.get(url, headers=headers, params={
-                'cql': cql_query,
-                'limit': limit * 2,  # Get more to choose from
-                'expand': 'space'
-            }, timeout=15)
+        # Format
+        formatted = []
+        for r in ranked[:limit]:
+            page_id = r.get("content", {}).get("id")
+            title = r.get("title") or "Untitled"
+            if not page_id:
+                continue
+            page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+            formatted.append({"title": title, "url": page_url})
 
-            if response.status_code == 200:
-                data = response.json()
+        # Fallback: if nothing useful, broaden to raw OR search
+        if not formatted:
+            logger.info(f"No strong results for '{query}', retrying with OR logic")
+            or_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR label = "{w}")' for w in words]
+            cql = " OR ".join(or_parts)
+            params["cql"] = cql
+            response = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            ranked = sorted(results, key=lambda r: calculate_relevance_score(r, query), reverse=True)
+            for r in ranked[:limit]:
+                page_id = r.get("content", {}).get("id")
+                title = r.get("title") or "Untitled"
+                if not page_id:
+                    continue
+                page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+                formatted.append({"title": title, "url": page_url})
 
-                for result in data.get('results', []):
-                    title = result.get('title', 'Untitled')
-                    page_id = result.get('id', '')
+        logger.info(f"Confluence search found {len(formatted)} results")
+        return formatted
 
-                    # Simple URL construction
-                    if page_id:
-                        full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
-                    else:
-                        encoded_title = title.replace(' ', '%20')
-                        full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
-
-                    results.append({
-                        'title': title,
-                        'url': full_url
-                    })
-
-                # If we got results, return them
-                if results:
-                    logger.info(f"Confluence search found {len(results)} results with query {i+1}")
-                    return results[:limit]
-            else:
-                logger.error(f"Confluence API error with query {i+1}: {response.status_code} - {response.text[:200]}")
-
-        logger.info(f"Confluence search found 0 results after trying all queries")
-        return results
     except Exception as e:
-        logger.error(f"Confluence search error: {e}")
+        logger.error(f"Confluence search error: {e}", exc_info=True)
+        return []
 
-    return []
+
+def calculate_relevance_score(result, query):
+    """
+    Improved scoring: keep API score primary, add boosts for title matches and label matches.
+    """
+    api_score = result.get("score", 0) or 0
+    title = result.get("title", "").lower()
+    labels = [l.get("name", "").lower() for l in result.get("content", {}).get("metadata", {}).get("labels", {}).get("results", [])]
+    q = query.lower()
+
+    relevance_score = api_score
+
+    # Exact query in title = strong signal
+    if q in title:
+        relevance_score += 20
+
+    # Word overlap bonus (title)
+    matches = sum(1 for w in q.split() if w in title)
+    relevance_score += matches * 5
+
+    # Label overlap bonus
+    label_matches = sum(1 for w in q.split() if any(w in label for label in labels))
+    relevance_score += label_matches * 10
+
+    return relevance_score
 
 def search_zendesk_tickets(query, limit=5):
     """Search Zendesk tickets using API with improved error handling"""

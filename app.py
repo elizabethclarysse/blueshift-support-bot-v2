@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_file
 import requests
 import os
 import boto3
@@ -767,6 +767,24 @@ LIMIT 10"""
 @app.route('/')
 def index():
     return render_template_string(MAIN_TEMPLATE)
+
+@app.route('/blueshift-favicon.png')
+def favicon():
+    """Serve the Blueshift favicon"""
+    try:
+        return send_file('blueshift-favicon.png', mimetype='image/png')
+    except Exception as e:
+        logger.error(f"Error serving favicon: {e}")
+        return '', 404
+
+@app.route('/favicon.ico')
+def favicon_ico():
+    """Serve favicon.ico (redirect to PNG)"""
+    try:
+        return send_file('blueshift-favicon.png', mimetype='image/png')
+    except Exception as e:
+        logger.error(f"Error serving favicon.ico: {e}")
+        return '', 404
 
 @app.route('/query', methods=['POST'])
 def handle_query():

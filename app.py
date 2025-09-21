@@ -91,12 +91,19 @@ Be specific, actionable, and helpful."""
     except Exception as e:
         return f"Error: {str(e)}"
 
-def search_jira_tickets(query, limit=5):
-    """Search JIRA tickets using API with improved error handling"""
+def search_jira_tickets(query, limit=5, debug=True):
+    """Search JIRA tickets with improved relevance and stop word filtering"""
     try:
         if not JIRA_TOKEN or not JIRA_EMAIL:
             logger.warning("JIRA credentials not configured - using fallback")
             return []
+
+        # Same stop words as Confluence
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
 
         auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
         headers = {
@@ -105,36 +112,121 @@ def search_jira_tickets(query, limit=5):
             'Content-Type': 'application/json'
         }
 
-        # Use broader JQL to find more results
-        jql = f'(text ~ "{query}" OR summary ~ "{query}") ORDER BY updated DESC'
+        # --- Clean query words ---
+        words = query.strip().split()
+        clean_query_words = clean_words(words)
 
-        # Try the new jql endpoint first, fallback if it doesn't work
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"JIRA search - Original: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build JQL queries progressively ---
+        jql_variants = []
+
+        # 1. Exact phrase in summary (titles are most relevant)
+        jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
+
+        # 2. Clean words AND in summary and text
+        if len(clean_query_words) > 1:
+            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
+
+        # 3. Clean words OR in summary and text
+        or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
+
+        # 4. Single most important word in summary only
+        if len(clean_query_words) > 1:
+            main_word = max(clean_query_words, key=len)
+            jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
+
         url = f"{JIRA_URL}/rest/api/3/search/jql"
 
-        payload = {
-            'jql': jql,
-            'maxResults': limit,
-            'fields': ['summary', 'key', 'status']
-        }
+        # --- Try queries in order ---
+        final_issues = []
+        for i, jql in enumerate(jql_variants):
+            try:
+                logger.info(f"Trying JIRA JQL #{i+1}: {jql}")
 
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+                payload = {
+                    'jql': jql,
+                    'maxResults': limit * 3,  # Get more for filtering
+                    'fields': ['summary', 'key', 'status', 'priority', 'issuetype']
+                }
 
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            for issue in data.get('issues', []):
+                response = requests.post(url, headers=headers, json=payload, timeout=15)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    issues = data.get('issues', [])
+
+                    if issues:
+                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results")
+                        final_issues = issues
+                        break
+                    else:
+                        logger.info(f"JIRA query #{i+1} returned no results")
+                else:
+                    logger.error(f"JIRA API error on query #{i+1}: {response.status_code}")
+
+            except Exception as e:
+                logger.error(f"JIRA query #{i+1} failed: {e}")
+                continue
+
+        if not final_issues:
+            logger.info("No JIRA results found with any query variant")
+            return []
+
+        # --- Debug: log raw results ---
+        if debug and final_issues:
+            logger.info("---- Raw JIRA Results ----")
+            for issue in final_issues[:10]:
+                key = issue.get('key', 'N/A')
+                summary = issue.get('fields', {}).get('summary', 'No summary')
+                status = issue.get('fields', {}).get('status', {}).get('name', 'Unknown')
+                logger.info(f"Key: {key} | Status: {status} | Summary: {summary}")
+            logger.info("---- End JIRA Results ----")
+
+        # --- Score and filter results ---
+        def score_issue(issue):
+            summary = issue.get('fields', {}).get('summary', '').lower()
+
+            # Count clean word matches in summary
+            matches = sum(1 for word in clean_query_words if word.lower() in summary)
+
+            # Bonus for exact query in summary
+            exact_bonus = 10 if query.lower() in summary else 0
+
+            # Priority bonus (higher priority = more relevant)
+            priority = issue.get('fields', {}).get('priority', {})
+            priority_name = priority.get('name', '').lower() if priority else ''
+            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
+
+            return matches * 3 + exact_bonus + priority_bonus
+
+        # Sort by relevance score
+        scored_issues = [(score_issue(issue), issue) for issue in final_issues]
+        scored_issues.sort(reverse=True, key=lambda x: x[0])
+
+        # --- Format results ---
+        results = []
+        for score, issue in scored_issues[:limit]:
+            if score > 0:  # Only include issues with some relevance
+                summary = issue.get('fields', {}).get('summary', 'No summary')
+                key = issue.get('key', 'Unknown')
                 results.append({
-                    'title': f"{issue['key']}: {issue['fields']['summary']}",
-                    'url': f"{JIRA_URL}/browse/{issue['key']}"
+                    'title': f"{key}: {summary}",
+                    'url': f"{JIRA_URL}/browse/{key}"
                 })
-            logger.info(f"JIRA search found {len(results)} results")
-            return results
-        else:
-            logger.error(f"JIRA API error: {response.status_code} - {response.text[:200]}")
+
+        logger.info(f"JIRA search found {len(results)} relevant results")
+        return results
+
     except Exception as e:
         logger.error(f"JIRA search error: {e}")
-
-    return []
+        return []
 
 def search_confluence_docs(query, limit=5, space_key=None, debug=True):
     """

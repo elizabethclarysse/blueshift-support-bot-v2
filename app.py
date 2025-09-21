@@ -659,12 +659,26 @@ def get_available_tables(database_name):
         return []
 
 def generate_athena_insights(user_query):
-    """Generate data insights using Athena queries based on user query"""
+    """Generate data insights using Athena queries based on user query with improved relevance"""
     try:
+        # Same stop words filtering as other searches
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        # Extract key terms from user query
+        words = user_query.strip().split()
+        clean_query_words = clean_words(words)
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Athena query generation - Original: '{user_query}' -> Key terms: {clean_query_words}")
+
         # Get available tables first
         database_name = ATHENA_DATABASES[0]  # Use first database
         available_tables = get_available_tables(database_name)
-        table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3, and other tables"
+        table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3"
 
         # Use AI to determine what kind of data query would be helpful
         headers = {
@@ -673,107 +687,58 @@ def generate_athena_insights(user_query):
             'anthropic-version': '2023-06-01'
         }
 
-        database_list = ', '.join(ATHENA_DATABASES)
+        # More focused prompt that analyzes specific query terms
         analysis_prompt = f"""Analyze this Blueshift support query: "{user_query}"
 
-Available tables in {database_name}: {table_list}
+Key terms extracted: {clean_query_words}
+Available tables: {table_list}
 
-IMPORTANT: You must ONLY use the actual table names listed above. Do not use generic names.
+Based on the specific query terms, generate a targeted Athena SQL query. Focus on these patterns:
 
-Generate a SIMPLE troubleshooting SQL query for AWS Athena based on the user's question.
+QUERY TERM ANALYSIS:
+- If query mentions "error", "fail", "failure" → Look for log_level = 'ERROR' and specific error messages
+- If query mentions "user", "customer", "person" → Focus on user_uuid tracking and user journey
+- If query mentions "campaign" → Focus on campaign_uuid and campaign performance
+- If query mentions "message", "email", "sms", "push" → Look for message delivery logs
+- If query mentions "bounce", "delivery" → Focus on delivery status and bounce analysis
+- If query mentions "external", "fetch", "api" → Look for ExternalFetchError patterns
+- If query mentions "duplicate", "dedup" → Look for deduplication messages
+- If query mentions "limit", "throttle" → Look for channel limit errors
+- If query mentions "recommendation", "product" → Look for recommendation engine logs
 
-Common query patterns for different support issues:
+CREATE A SPECIFIC QUERY that matches the user's actual question using these guidelines:
 
-For USER-SPECIFIC MESSAGING queries (why didn't user get messaged, user journey analysis):
-SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
-AND user_uuid = 'USER_UUID_HERE'
-AND file_date >= '2024-12-01'
-ORDER BY timestamp ASC
+1. Always use: FROM {database_name}.{table_list.split(',')[0] if ',' in table_list else table_list}
+2. Always include: WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
+3. Use recent dates: AND file_date >= '2024-12-01'
+4. Match query terms to message patterns:
+   - For errors: AND log_level = 'ERROR'
+   - For specific issues: AND message LIKE '%{clean_query_words[0] if clean_query_words else 'error'}%'
+5. Order by timestamp DESC for recent issues
+6. Limit results: LIMIT 50
 
-For ERROR/FAILURE analysis:
-SELECT timestamp, user_uuid, campaign_uuid, trigger_uuid, message
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
+Example for "campaign delivery errors":
+SELECT timestamp, user_uuid, campaign_uuid, message, log_level
+FROM {database_name}.campaign_execution_v3
+WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
 AND log_level = 'ERROR'
-AND file_date >= '2024-12-01'
-ORDER BY timestamp ASC
-LIMIT 100
-
-For DEDUPLICATION issues:
-SELECT user_uuid, campaign_uuid, message
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND (message LIKE '%dedup%' OR message LIKE '%duplicate%' OR message LIKE '%skipping%')
-AND file_date >= '2024-12-01'
-ORDER BY timestamp ASC
-
-For CHANNEL LIMIT errors:
-SELECT COUNT(DISTINCT(user_uuid))
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
-AND message LIKE '%channel messaging limits hit%'
-AND file_date >= '2024-12-01'
-
-For SOFT BOUNCE analysis:
-SELECT timestamp, user_uuid, campaign_uuid, message
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
-AND message LIKE '%soft_bounce%'
+AND (message LIKE '%delivery%' OR message LIKE '%campaign%')
 AND file_date >= '2024-12-01'
 ORDER BY timestamp DESC
-LIMIT 10
+LIMIT 50
 
-For JSON extraction (email delivery details):
-SELECT
-    json_extract_scalar(message, '$.action') AS action,
-    json_extract_scalar(message, '$.email') AS email,
-    json_extract_scalar(message, '$.user_uuid') AS user_uuid,
-    json_extract_scalar(message, '$.reason') AS reason
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'ACCOUNT_UUID_HERE'
-AND campaign_uuid = 'CAMPAIGN_UUID_HERE'
-AND message LIKE '%soft_bounce%'
-AND file_date >= '2024-12-01'
-
-Key rules:
-1. Use realistic placeholders: ACCOUNT_UUID_HERE, CAMPAIGN_UUID_HERE, USER_UUID_HERE
-2. Use ONLY these columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, file_date, execution_key, transaction_uuid, worker_name
-3. Always include account_uuid filter (required for all queries)
-4. For user-specific queries: Include user_uuid and campaign_uuid filters
-5. For error analysis: Use log_level = 'ERROR' and specific message patterns
-6. For counting queries: Use COUNT(DISTINCT(user_uuid)) pattern
-7. Use recent dates: file_date >= '2024-12-01'
-8. Common message patterns: '%dedup%', '%channel messaging limits hit%', '%soft_bounce%', '%ExternalFetchError%', '%NotEnoughRecommendationProductsError%'
-9. Order by timestamp ASC for chronological analysis
-10. Use JSON extraction for delivery details: json_extract_scalar(message, '$.field')
-11. Include proper LIMIT clauses (10-100 for data queries)
-
-If the available tables list is empty, create a simple SHOW TABLES query instead.
-
-Provide:
-1. The best database to use
-2. A practical troubleshooting SQL query using ONLY the actual available table names
-3. A brief explanation of what this query would help diagnose
-
-Format:
-DATABASE:
-[chosen database name]
+Format your response as:
+DATABASE: {database_name}
 
 SQL_QUERY:
-[your troubleshooting SQL query using only actual table names from the list above]
+[Write a specific SQL query that directly addresses the user's question using their key terms]
 
 INSIGHT_EXPLANATION:
-[brief explanation of what this query helps diagnose]"""
+[Explain specifically what this query will help diagnose about their question]"""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
-            'max_tokens': 500,
+            'max_tokens': 400,
             'messages': [{'role': 'user', 'content': analysis_prompt}]
         }
 
@@ -782,12 +747,14 @@ INSIGHT_EXPLANATION:
 
         if response.status_code == 200:
             ai_response = response.json()['content'][0]['text'].strip()
+            logger.info(f"Athena AI response: {ai_response[:200]}...")
             return parse_athena_analysis(ai_response, user_query)
         else:
+            logger.error(f"Athena AI API error: {response.status_code}")
             return get_default_athena_insights(user_query)
 
     except Exception as e:
-        print(f"Athena insights generation error: {e}")
+        logger.error(f"Athena insights generation error: {e}")
         return get_default_athena_insights(user_query)
 
 def parse_athena_analysis(ai_response, user_query):

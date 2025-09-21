@@ -105,8 +105,8 @@ def search_jira_tickets(query, limit=5):
             'Content-Type': 'application/json'
         }
 
-        # Use the migrated JQL endpoint as recommended by Atlassian
-        jql = f'text ~ "{query}" ORDER BY updated DESC'
+        # Use broader JQL to find more results
+        jql = f'(text ~ "{query}" OR summary ~ "{query}") ORDER BY updated DESC'
 
         # Try the new jql endpoint first, fallback if it doesn't work
         url = f"{JIRA_URL}/rest/api/3/search/jql"
@@ -137,7 +137,7 @@ def search_jira_tickets(query, limit=5):
     return []
 
 def search_confluence_docs(query, limit=5):
-    """Search Confluence pages using API with improved error handling"""
+    """Search Confluence pages using API with improved relevance filtering"""
     try:
         if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
             logger.warning("Confluence credentials not configured - using fallback")
@@ -153,14 +153,32 @@ def search_confluence_docs(query, limit=5):
         url = f"{CONFLUENCE_URL}/rest/api/search"
         query_clean = query.strip()
 
-        # Simple CQL query
-        cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
+        # Improved CQL query - prioritize exact phrases and require minimum relevance
+        query_words = [word for word in query_clean.split() if len(word) > 2]
+
+        # Build a more focused CQL query
+        if len(query_words) >= 2:
+            # For multi-word queries, prioritize exact phrase match and require multiple words
+            phrase_search = f'(title ~ "{query_clean}" OR text ~ "{query_clean}")'
+            # Also search for combinations of important words with AND logic for better precision
+            word_combinations = []
+            for i, word in enumerate(query_words[:3]):  # Limit to first 3 words
+                word_combinations.append(f'(title ~ "{word}" OR text ~ "{word}")')
+
+            if len(word_combinations) >= 2:
+                combined_search = ' AND '.join(word_combinations[:2])  # Require at least 2 key words
+                cql_query = f'type = "page" AND ({phrase_search} OR ({combined_search}))'
+            else:
+                cql_query = f'type = "page" AND {phrase_search}'
+        else:
+            # For single word or short queries, use exact matching
+            cql_query = f'type = "page" AND (title ~ "{query_clean}" OR text ~ "{query_clean}")'
 
         logger.info(f"Confluence CQL query: {cql_query}")
 
         response = requests.get(url, headers=headers, params={
             'cql': cql_query,
-            'limit': 20,
+            'limit': 15,  # Reduced limit for better quality
             'expand': 'space'
         }, timeout=15)
 
@@ -173,42 +191,68 @@ def search_confluence_docs(query, limit=5):
                 space_key = result.get('space', {}).get('key', '')
                 page_id = result.get('id', '')
 
-                # Better relevance scoring that prioritizes query relevance
+                # Enhanced relevance scoring with stricter filtering
                 title_lower = title.lower()
                 query_lower = query.lower()
+                query_words = [word for word in query_lower.split() if len(word) > 2]
 
-                # Start with API score but boost query-relevant results
+                # Start with base score
                 api_score = result.get('score', 0)
-                relevance_score = api_score if api_score > 0 else 1.0
+                relevance_score = 0
 
-                # Strong bonus for exact query match in title (most relevant)
+                # High score for exact phrase match in title (most relevant)
                 if query_lower in title_lower:
-                    relevance_score += 100
+                    relevance_score += 200
 
-                # Good bonus for query words in title
-                query_words = query_lower.split()
-                title_word_matches = sum(1 for word in query_words if len(word) > 2 and word in title_lower)
-                relevance_score += title_word_matches * 20
+                # Medium score for partial phrase matches
+                title_words = title_lower.split()
+                consecutive_matches = 0
+                for i in range(len(title_words)):
+                    for j in range(len(query_words)):
+                        if i + j < len(title_words) and title_words[i + j] == query_words[j]:
+                            consecutive_matches += 1
+                        else:
+                            break
+                    if consecutive_matches > 1:
+                        relevance_score += consecutive_matches * 30
 
-                # Simple URL construction - just use the page ID if available
-                if page_id:
-                    full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
-                else:
-                    # Fallback to search URL
-                    encoded_title = title.replace(' ', '%20')
-                    full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+                # Score for individual word matches in title
+                title_word_matches = sum(1 for word in query_words if word in title_lower)
+                if title_word_matches >= 1:
+                    relevance_score += title_word_matches * 25
 
-                scored_results.append({
-                    'title': title,
-                    'url': full_url,
-                    'score': relevance_score
-                })
+                # Minimum relevance threshold - filter out low-relevance results
+                min_threshold = 25 if len(query_words) > 1 else 20
+
+                # Additional scoring based on API score
+                if api_score > 0:
+                    relevance_score += min(api_score * 0.1, 20)  # Cap API score contribution
+
+                # Only include results that meet minimum relevance threshold
+                if relevance_score >= min_threshold:
+                    # Simple URL construction - use page ID if available
+                    if page_id:
+                        full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+                    else:
+                        # Fallback to search URL
+                        encoded_title = title.replace(' ', '%20')
+                        full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+
+                    scored_results.append({
+                        'title': title,
+                        'url': full_url,
+                        'score': relevance_score,
+                        'space': space_key
+                    })
 
             # Sort by relevance score and return top results
             scored_results.sort(key=lambda x: x['score'], reverse=True)
             results = [{'title': r['title'], 'url': r['url']} for r in scored_results[:limit]]
 
-            logger.info(f"Confluence search found {len(results)} valid results")
+            logger.info(f"Confluence search found {len(results)} relevant results (filtered from {len(data.get('results', []))} total)")
+            for i, result in enumerate(results):
+                logger.info(f"  {i+1}. {result['title']} (score: {scored_results[i]['score']:.1f})")
+
             return results
         else:
             logger.error(f"Confluence API error: {response.status_code} - {response.text[:200]}")
@@ -242,7 +286,7 @@ def search_zendesk_tickets(query, limit=5):
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
 
         response = requests.get(url, headers=headers, params={
-            'query': f'{query} type:ticket',
+            'query': f'({query}) type:ticket',
             'per_page': limit,
             'sort_by': 'relevance',
             'sort_order': 'desc'

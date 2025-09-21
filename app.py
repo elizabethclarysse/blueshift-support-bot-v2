@@ -149,42 +149,56 @@ def search_confluence_docs(query, limit=5):
             'Accept': 'application/json'
         }
 
-        # Simple search - just search for the keywords
+        # Try different search approaches
         url = f"{CONFLUENCE_URL}/rest/api/search"
-        cql_query = f'type = "page" AND (title ~ "{query}" OR text ~ "{query}")'
 
-        logger.info(f"Confluence CQL query: {cql_query}")
+        # Try exact text search first, then fallback to fuzzy
+        cql_queries = [
+            f'type = "page" AND (title contains "{query}" OR text contains "{query}")',
+            f'type = "page" AND text ~ "{query}"',
+            f'type = "page" AND title ~ "{query}"'
+        ]
 
-        response = requests.get(url, headers=headers, params={
-            'cql': cql_query,
-            'limit': limit,
-            'expand': 'space'
-        }, timeout=15)
+        results = []
 
-        if response.status_code == 200:
-            data = response.json()
-            results = []
+        # Try each query until we get results
+        for i, cql_query in enumerate(cql_queries):
+            logger.info(f"Confluence CQL query {i+1}: {cql_query}")
 
-            for result in data.get('results', []):
-                title = result.get('title', 'Untitled')
-                page_id = result.get('id', '')
+            response = requests.get(url, headers=headers, params={
+                'cql': cql_query,
+                'limit': limit * 2,  # Get more to choose from
+                'expand': 'space'
+            }, timeout=15)
 
-                # Simple URL construction
-                if page_id:
-                    full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
-                else:
-                    encoded_title = title.replace(' ', '%20')
-                    full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+            if response.status_code == 200:
+                data = response.json()
 
-                results.append({
-                    'title': title,
-                    'url': full_url
-                })
+                for result in data.get('results', []):
+                    title = result.get('title', 'Untitled')
+                    page_id = result.get('id', '')
 
-            logger.info(f"Confluence search found {len(results)} results")
-            return results
-        else:
-            logger.error(f"Confluence API error: {response.status_code} - {response.text[:200]}")
+                    # Simple URL construction
+                    if page_id:
+                        full_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+                    else:
+                        encoded_title = title.replace(' ', '%20')
+                        full_url = f"{CONFLUENCE_URL}/dosearchsite.action?queryString={encoded_title}"
+
+                    results.append({
+                        'title': title,
+                        'url': full_url
+                    })
+
+                # If we got results, return them
+                if results:
+                    logger.info(f"Confluence search found {len(results)} results with query {i+1}")
+                    return results[:limit]
+            else:
+                logger.error(f"Confluence API error with query {i+1}: {response.status_code} - {response.text[:200]}")
+
+        logger.info(f"Confluence search found 0 results after trying all queries")
+        return results
     except Exception as e:
         logger.error(f"Confluence search error: {e}")
 

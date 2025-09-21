@@ -138,64 +138,97 @@ def search_jira_tickets(query, limit=5):
 
 def search_confluence_docs(query, limit=5, space_key=None, debug=True):
     """
-    Confluence search with minimal interference:
-    - Trust API scoring
-    - Progressive query strategy: phrase -> AND -> OR
-    - Lightweight title boost only
-    - Debug mode logs raw API results
+    Confluence search with fixes for poor indexing:
+    - Drop stop words from queries
+    - Force OR fallback if top results have low scores
+    - Use broader field search (content, body)
+    - Progressive loosening strategy
     """
     try:
         if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
             logger.warning("Confluence credentials not configured - using fallback")
             return []
 
+        # Stop words that break Confluence CQL
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
         def run_search(cql):
             url = f"{CONFLUENCE_URL}/rest/api/search"
             params = {
                 "cql": cql,
                 "limit": limit * 10,   # pull more for debugging
-                "expand": "title"
+                "expand": "title,content"
             }
             resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
             resp.raise_for_status()
             return resp.json().get("results", [])
 
-        # --- Build queries progressively ---
+        # --- Clean query words ---
         words = query.strip().split()
+        clean_query_words = clean_words(words)
+
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Original query: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build queries progressively with broader fields ---
         cql_variants = []
 
-        # 1. Exact phrase
-        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
+        # 1. Exact phrase (broader fields)
+        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\"" OR content ~ "\\"{query}\\""')
 
-        # 2. AND across words (if multiple)
-        if len(words) > 1:
-            and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in words]
+        # 2. Clean words AND (broader fields)
+        if len(clean_query_words) > 1:
+            and_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR content ~ "{w}")' for w in clean_query_words]
             cql_variants.append(" AND ".join(and_parts))
 
-        # 3. OR fallback
-        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in words]
+        # 3. Clean words OR (broader fields)
+        or_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR content ~ "{w}")' for w in clean_query_words]
         cql_variants.append(" OR ".join(or_parts))
+
+        # 4. Single most important word (if we have multiple)
+        if len(clean_query_words) > 1:
+            # Use longest word as most likely to be significant
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}" OR content ~ "{main_word}"')
 
         # Add space filter if provided
         if space_key:
             cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
 
-        # --- Try queries in order until we get results ---
-        results = []
-        for cql in cql_variants:
+        # --- Try queries in order, with score quality check ---
+        final_results = []
+        for i, cql in enumerate(cql_variants):
             try:
-                logger.info(f"Trying Confluence CQL: {cql}")
+                logger.info(f"Trying Confluence CQL #{i+1}: {cql}")
                 results = run_search(cql)
+
                 if results:
-                    break
+                    top_score = max(r.get("score", 0) for r in results[:3])
+                    logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
+
+                    # If we got decent results (score > 10) or this is our last attempt, use them
+                    if top_score > 10 or i == len(cql_variants) - 1:
+                        final_results = results
+                        logger.info(f"Using results from query #{i+1}")
+                        break
+                    else:
+                        logger.info(f"Top score {top_score} too low, trying next query...")
+
             except Exception as e:
-                logger.error(f"Confluence query failed: {e}", exc_info=True)
+                logger.error(f"Confluence query #{i+1} failed: {e}", exc_info=True)
                 continue
 
         # --- Debug: log top 10 raw results ---
-        if debug and results:
+        if debug and final_results:
             logger.info("---- Raw Confluence Results ----")
-            for r in results[:10]:
+            for r in final_results[:10]:
                 page_id = r.get("content", {}).get("id")
                 title = r.get("title") or "Untitled"
                 score = r.get("score", 0)
@@ -207,11 +240,14 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
         def score_fn(r):
             api_score = r.get("score", 0) or 0
             title = (r.get("title") or "").lower()
-            q = query.lower()
-            boost = 2 if q in title else 0
+
+            # Check if any clean words appear in title
+            title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
+            boost = title_word_matches * 5  # Small boost per matching word
+
             return api_score * 100 + boost
 
-        ranked = sorted(results, key=score_fn, reverse=True)
+        ranked = sorted(final_results, key=score_fn, reverse=True)
 
         # --- Format results ---
         formatted = []

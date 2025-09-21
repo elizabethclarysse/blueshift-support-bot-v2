@@ -1170,7 +1170,7 @@ MAIN_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>Blueshift Support Bot</h1>
+        <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 40px; vertical-align: middle; margin-right: 10px;">Blueshift Support Bot</h1>
 
         <div class="search-container">
             <input type="text" id="queryInput" placeholder="Enter your support question">

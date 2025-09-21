@@ -161,7 +161,7 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
             params = {
                 "cql": cql,
                 "limit": limit * 10,   # pull more for debugging
-                "expand": "title,content"
+                "expand": "title"
             }
             resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
             resp.raise_for_status()
@@ -177,26 +177,32 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
 
         logger.info(f"Original query: '{query}' -> Clean words: {clean_query_words}")
 
-        # --- Build queries progressively with broader fields ---
+        # --- Build queries progressively ---
         cql_variants = []
 
-        # 1. Exact phrase (broader fields)
-        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\"" OR content ~ "\\"{query}\\""')
+        # 1. Exact phrase (standard fields)
+        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
 
-        # 2. Clean words AND (broader fields)
+        # 2. Clean words AND (standard fields)
         if len(clean_query_words) > 1:
-            and_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR content ~ "{w}")' for w in clean_query_words]
+            and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
             cql_variants.append(" AND ".join(and_parts))
 
-        # 3. Clean words OR (broader fields)
-        or_parts = [f'(title ~ "{w}" OR text ~ "{w}" OR content ~ "{w}")' for w in clean_query_words]
+        # 3. Clean words OR (standard fields)
+        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         cql_variants.append(" OR ".join(or_parts))
 
         # 4. Single most important word (if we have multiple)
         if len(clean_query_words) > 1:
             # Use longest word as most likely to be significant
             main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}" OR content ~ "{main_word}"')
+            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
+
+        # 5. Very broad fallback - just search for any word
+        if clean_query_words:
+            # Pick the most specific word (longest) and search broadly
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'text ~ "{main_word}"')
 
         # Add space filter if provided
         if space_key:
@@ -213,8 +219,8 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
                     top_score = max(r.get("score", 0) for r in results[:3])
                     logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
 
-                    # If we got decent results (score > 10) or this is our last attempt, use them
-                    if top_score > 10 or i == len(cql_variants) - 1:
+                    # If we got decent results (score > 1) or this is our last attempt, use them
+                    if top_score > 1 or i == len(cql_variants) - 1:
                         final_results = results
                         logger.info(f"Using results from query #{i+1}")
                         break

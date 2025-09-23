@@ -62,7 +62,7 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = You are a Blueshift expert. Provide comprehensive, detailed answers for support queries.
+        prompt = f"""You are a Blueshift expert. Provide comprehensive, detailed answers for support queries.
 
 {query}
 

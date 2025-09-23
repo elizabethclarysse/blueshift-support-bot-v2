@@ -3,7 +3,7 @@ import requests
 import os
 import boto3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import base64
 import logging
@@ -17,6 +17,7 @@ except ImportError:
 
 app = Flask(__name__)
 app.secret_key = 'blueshift_support_bot_secret_key_2023'
+app.permanent_session_lifetime = timedelta(hours=12)
 
 # Use the correct Claude API key
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
@@ -845,6 +846,7 @@ def login():
         # Check credentials
         if username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
             session['logged_in'] = True
+            session.permanent = True
             return jsonify({'success': True})
         else:
             return jsonify({'success': False, 'error': 'Invalid username or password'})

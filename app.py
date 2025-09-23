@@ -1,11 +1,11 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_file
 import requests
 import os
 import boto3
 import json
 from datetime import datetime
 import time
-
+ 
 app = Flask(__name__)
 
 # Use environment variable for API key
@@ -413,6 +413,14 @@ def health_check():
     """Health check endpoint for Railway deployment"""
     return jsonify({"status": "healthy", "service": "Blueshift Support Bot"})
 
+@app.route('/favicon.ico')
+def favicon():
+    return send_file('blueshift-favicon.png', mimetype='image/png')
+
+@app.route('/blueshift-favicon.png')
+def favicon_png():
+    return send_file('blueshift-favicon.png', mimetype='image/png')
+
 # LOGIN TEMPLATE - EXACT COPY OF ZENDESK LOGIN WITH BLUESHIFT BRANDING
 LOGIN_TEMPLATE = '''
 <!DOCTYPE html>
@@ -447,6 +455,15 @@ LOGIN_TEMPLATE = '''
             vertical-align: middle;
             margin-right: 15px;
         }
+        input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
         button {
             background-color: #2790FF;
             color: white;
@@ -462,6 +479,14 @@ LOGIN_TEMPLATE = '''
         button:hover {
             background-color: #1976d2;
         }
+        .error {
+            color: #d73527;
+            margin: 10px 0;
+            padding: 10px;
+            background: #ffeaea;
+            border-radius: 4px;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -471,15 +496,42 @@ LOGIN_TEMPLATE = '''
             Support Bot
         </h1>
         <form id="loginForm">
-            <button type="submit">Log In</button>
+            <input type="text" id="username" placeholder="Username" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit">Login</button>
         </form>
+
+        <div id="error" class="error"></div>
     </div>
 
     <script>
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            // Simple login - just redirect to main app
-            window.location.href = '/';
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('error');
+
+            // Demo authentication
+            if (username === 'Blueshift Support' && password === 'BlueS&n@*9072!') {
+                // Redirect to main app
+                window.location.href = '/';
+            } else {
+                errorDiv.textContent = 'Invalid username or password';
+                errorDiv.style.display = 'block';
+                setTimeout(() => {
+                    errorDiv.style.display = 'none';
+                }, 3000);
+            }
+        });
+
+        // Clear error on input
+        document.getElementById('username').addEventListener('input', function() {
+            document.getElementById('error').style.display = 'none';
+        });
+
+        document.getElementById('password').addEventListener('input', function() {
+            document.getElementById('error').style.display = 'none';
         });
     </script>
 </body>

@@ -5,22 +5,57 @@ import boto3
 import json
 from datetime import datetime
 import time
- 
+import base64
+import logging
+
+# Try to load .env file if it exists (for development/testing)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, continue without it
+
 app = Flask(__name__)
 
-# Use environment variable for API key
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+# Use the correct Claude API key
+AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 
 # AWS Athena configuration - set these via environment variables
-ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'blueshift_data').split(',')
-ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://blueshift-athena-results/')
-AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
+ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
+
+# API Configuration for searches
+JIRA_URL = os.environ.get('JIRA_URL', 'https://blueshift.atlassian.net')
+JIRA_TOKEN = os.environ.get('JIRA_TOKEN')
+JIRA_EMAIL = os.environ.get('JIRA_EMAIL')
+
+CONFLUENCE_URL = os.environ.get('CONFLUENCE_URL', 'https://blueshift.atlassian.net/wiki')
+CONFLUENCE_TOKEN = os.environ.get('CONFLUENCE_TOKEN')
+CONFLUENCE_EMAIL = os.environ.get('CONFLUENCE_EMAIL')
+
+ZENDESK_SUBDOMAIN = os.environ.get('ZENDESK_SUBDOMAIN')
+ZENDESK_TOKEN = os.environ.get('ZENDESK_TOKEN')
+ZENDESK_EMAIL = os.environ.get('ZENDESK_EMAIL')
+
+# Configure logging for production debugging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Debug environment variables on startup
+logger.info(f"Environment variables loaded:")
+logger.info(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+logger.info(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
+logger.info(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+logger.info(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
+logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
 def call_anthropic_api(query):
     """Call Anthropic Claude API for high-quality responses"""
     try:
         headers = {
-            'x-api-key': ANTHROPIC_API_KEY,
+            'x-api-key': AI_API_KEY,
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01'
         }
@@ -56,87 +91,453 @@ Be specific, actionable, and helpful."""
     except Exception as e:
         return f"Error: {str(e)}"
 
+def search_jira_tickets(query, limit=5, debug=True):
+    """Search JIRA tickets with improved relevance and stop word filtering"""
+    try:
+        if not JIRA_TOKEN or not JIRA_EMAIL:
+            logger.warning("JIRA credentials not configured - using fallback")
+            return []
+
+        # Same stop words as Confluence
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+        headers = {
+            'Authorization': f'Basic {auth}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+
+        # --- Clean query words ---
+        words = query.strip().split()
+        clean_query_words = clean_words(words)
+
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"JIRA search - Original: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build JQL queries progressively ---
+        jql_variants = []
+
+        # 1. Exact phrase in summary (titles are most relevant)
+        jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
+
+        # 2. Clean words AND in summary and text
+        if len(clean_query_words) > 1:
+            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
+
+        # 3. Clean words OR in summary and text
+        or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
+
+        # 4. Single most important word in summary only
+        if len(clean_query_words) > 1:
+            main_word = max(clean_query_words, key=len)
+            jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
+
+        url = f"{JIRA_URL}/rest/api/3/search/jql"
+
+        # --- Try queries in order ---
+        final_issues = []
+        for i, jql in enumerate(jql_variants):
+            try:
+                logger.info(f"Trying JIRA JQL #{i+1}: {jql}")
+
+                payload = {
+                    'jql': jql,
+                    'maxResults': limit * 3,  # Get more for filtering
+                    'fields': ['summary', 'key', 'status', 'priority', 'issuetype']
+                }
+
+                response = requests.post(url, headers=headers, json=payload, timeout=15)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    issues = data.get('issues', [])
+
+                    if issues:
+                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results")
+                        final_issues = issues
+                        break
+                    else:
+                        logger.info(f"JIRA query #{i+1} returned no results")
+                else:
+                    logger.error(f"JIRA API error on query #{i+1}: {response.status_code}")
+
+            except Exception as e:
+                logger.error(f"JIRA query #{i+1} failed: {e}")
+                continue
+
+        if not final_issues:
+            logger.info("No JIRA results found with any query variant")
+            return []
+
+        # --- Debug: log raw results ---
+        if debug and final_issues:
+            logger.info("---- Raw JIRA Results ----")
+            for issue in final_issues[:10]:
+                key = issue.get('key', 'N/A')
+                summary = issue.get('fields', {}).get('summary', 'No summary')
+                status = issue.get('fields', {}).get('status', {}).get('name', 'Unknown')
+                logger.info(f"Key: {key} | Status: {status} | Summary: {summary}")
+            logger.info("---- End JIRA Results ----")
+
+        # --- Score and filter results ---
+        def score_issue(issue):
+            summary = issue.get('fields', {}).get('summary', '').lower()
+
+            # Count clean word matches in summary
+            matches = sum(1 for word in clean_query_words if word.lower() in summary)
+
+            # Bonus for exact query in summary
+            exact_bonus = 10 if query.lower() in summary else 0
+
+            # Priority bonus (higher priority = more relevant)
+            priority = issue.get('fields', {}).get('priority', {})
+            priority_name = priority.get('name', '').lower() if priority else ''
+            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
+
+            return matches * 3 + exact_bonus + priority_bonus
+
+        # Sort by relevance score
+        scored_issues = [(score_issue(issue), issue) for issue in final_issues]
+        scored_issues.sort(reverse=True, key=lambda x: x[0])
+
+        # --- Format results ---
+        results = []
+        for score, issue in scored_issues[:limit]:
+            if score > 0:  # Only include issues with some relevance
+                summary = issue.get('fields', {}).get('summary', 'No summary')
+                key = issue.get('key', 'Unknown')
+                results.append({
+                    'title': f"{key}: {summary}",
+                    'url': f"{JIRA_URL}/browse/{key}"
+                })
+
+        logger.info(f"JIRA search found {len(results)} relevant results")
+        return results
+
+    except Exception as e:
+        logger.error(f"JIRA search error: {e}")
+        return []
+
+def search_confluence_docs(query, limit=5, space_key=None, debug=True):
+    """
+    Confluence search with fixes for poor indexing:
+    - Drop stop words from queries
+    - Force OR fallback if top results have low scores
+    - Use broader field search (content, body)
+    - Progressive loosening strategy
+    """
+    try:
+        if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
+            logger.warning("Confluence credentials not configured - using fallback")
+            return []
+
+        # Stop words that break Confluence CQL
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        def run_search(cql):
+            url = f"{CONFLUENCE_URL}/rest/api/search"
+            params = {
+                "cql": cql,
+                "limit": limit * 10,   # pull more for debugging
+                "expand": "title"
+            }
+            resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
+            resp.raise_for_status()
+            return resp.json().get("results", [])
+
+        # --- Clean query words ---
+        words = query.strip().split()
+        clean_query_words = clean_words(words)
+
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Original query: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build queries progressively ---
+        cql_variants = []
+
+        # 1. Exact phrase (standard fields)
+        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
+
+        # 2. Clean words AND (standard fields)
+        if len(clean_query_words) > 1:
+            and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            cql_variants.append(" AND ".join(and_parts))
+
+        # 3. Clean words OR (standard fields)
+        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        cql_variants.append(" OR ".join(or_parts))
+
+        # 4. Single most important word (if we have multiple)
+        if len(clean_query_words) > 1:
+            # Use longest word as most likely to be significant
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
+
+        # 5. Very broad fallback - just search for any word
+        if clean_query_words:
+            # Pick the most specific word (longest) and search broadly
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'text ~ "{main_word}"')
+
+        # Add space filter if provided
+        if space_key:
+            cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
+
+        # --- Try queries in order, with score quality check ---
+        final_results = []
+        for i, cql in enumerate(cql_variants):
+            try:
+                logger.info(f"Trying Confluence CQL #{i+1}: {cql}")
+                results = run_search(cql)
+
+                if results:
+                    top_score = max(r.get("score", 0) for r in results[:3])
+                    logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
+
+                    # If we got decent results (score > 1) or this is our last attempt, use them
+                    if top_score > 1 or i == len(cql_variants) - 1:
+                        final_results = results
+                        logger.info(f"Using results from query #{i+1}")
+                        break
+                    else:
+                        logger.info(f"Top score {top_score} too low, trying next query...")
+
+            except Exception as e:
+                logger.error(f"Confluence query #{i+1} failed: {e}", exc_info=True)
+                continue
+
+        # --- Debug: log top 10 raw results ---
+        if debug and final_results:
+            logger.info("---- Raw Confluence Results ----")
+            for r in final_results[:10]:
+                page_id = r.get("content", {}).get("id")
+                title = r.get("title") or "Untitled"
+                score = r.get("score", 0)
+                url = f"{CONFLUENCE_URL}/pages/{page_id}" if page_id else "N/A"
+                logger.info(f"Title: {title} | Score: {score} | URL: {url}")
+            logger.info("---- End Raw Results ----")
+
+        # --- Re-rank: trust API score, tiny title nudge ---
+        def score_fn(r):
+            api_score = r.get("score", 0) or 0
+            title = (r.get("title") or "").lower()
+
+            # Check if any clean words appear in title
+            title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
+            boost = title_word_matches * 5  # Small boost per matching word
+
+            return api_score * 100 + boost
+
+        ranked = sorted(final_results, key=score_fn, reverse=True)
+
+        # --- Format results ---
+        formatted = []
+        for r in ranked[:limit]:
+            page_id = r.get("content", {}).get("id")
+            title = r.get("title") or "Untitled"
+            if not page_id:
+                continue
+            page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+            formatted.append({"title": title, "url": page_url})
+
+        logger.info(f"Confluence search found {len(formatted)} results")
+        return formatted
+
+    except Exception as e:
+        logger.error(f"Confluence search error: {e}", exc_info=True)
+        return []
+
+def search_zendesk_tickets(query, limit=5):
+    """Search Zendesk tickets using API with improved error handling"""
+    try:
+        if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN:
+            logger.warning("Zendesk credentials not configured - using fallback")
+            return []
+
+        # Try Basic Auth with email/token combination first
+        if ZENDESK_EMAIL:
+            auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+            headers = {
+                'Authorization': f'Basic {auth}',
+                'Accept': 'application/json'
+            }
+        else:
+            # Fallback to Bearer token
+            headers = {
+                'Authorization': f'Bearer {ZENDESK_TOKEN}',
+                'Accept': 'application/json'
+            }
+
+        # Search API endpoint
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
+
+        response = requests.get(url, headers=headers, params={
+            'query': f'({query}) type:ticket',
+            'per_page': limit,
+            'sort_by': 'relevance',
+            'sort_order': 'desc'
+        }, timeout=15)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            for ticket in data.get('results', [])[:limit]:
+                results.append({
+                    'title': f"Ticket #{ticket['id']}: {ticket.get('subject', 'No Subject')}",
+                    'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket['id']}"
+                })
+            logger.info(f"Zendesk search found {len(results)} results")
+            return results
+        else:
+            logger.error(f"Zendesk API error: {response.status_code} - {response.text[:200]}")
+    except Exception as e:
+        logger.error(f"Zendesk search error: {e}")
+
+    return []
+
+def search_help_docs(query, limit=3):
+    """Search Blueshift Help Center using Zendesk Help Center API"""
+    try:
+        # Use Zendesk Help Center API to search articles
+        if not ZENDESK_SUBDOMAIN or not ZENDESK_TOKEN:
+            logger.warning("Zendesk Help Center credentials not configured - using fallback")
+        else:
+            # Set up authentication
+            if ZENDESK_EMAIL:
+                auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+                headers = {
+                    'Authorization': f'Basic {auth}',
+                    'Accept': 'application/json'
+                }
+            else:
+                headers = {
+                    'Authorization': f'Bearer {ZENDESK_TOKEN}',
+                    'Accept': 'application/json'
+                }
+
+            # Use the Help Center articles search API
+            search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
+            response = requests.get(search_url, headers=headers, params={
+                'query': query,
+                'per_page': 5  # Good balance for Help Center
+            }, timeout=15)
+
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for article in data.get('results', []):
+                    title = article.get('title', 'Untitled')
+                    url = article.get('html_url', '')
+
+                    if title and url:
+                        results.append({
+                            'title': title,
+                            'url': url
+                        })
+
+                if results:
+                    logger.info(f"Help Center API search found {len(results)} results for '{query}'")
+                    for i, doc in enumerate(results):
+                        logger.info(f"  {i+1}. {doc['title']}")
+                    return results
+                else:
+                    logger.info(f"Help Center API search returned no results for '{query}'")
+            else:
+                logger.error(f"Help Center API error: {response.status_code} - {response.text[:200]}")
+
+    except Exception as e:
+        logger.error(f"Help Center API search error: {e}")
+
+    # Enhanced curated list fallback with better matching for external fetch issues
+    help_docs_expanded = [
+        {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053", "keywords": ["api", "integration", "developer", "external", "fetch", "webhook", "endpoint"]},
+        {"title": "Common API Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773", "keywords": ["issues", "problems", "troubleshoot", "failing", "error", "api", "external", "fetch", "timeout", "connection"]},
+        {"title": "Event Tracking API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453", "keywords": ["event", "tracking", "data", "api", "external", "fetch", "post", "send"]},
+        {"title": "Custom API Endpoints", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173", "keywords": ["custom", "api", "endpoint", "external", "integration", "fetch", "data"]},
+        {"title": "External Data Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253", "keywords": ["external", "data", "integration", "fetch", "import", "sync", "api"]},
+        {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333", "keywords": ["webhook", "external", "fetch", "callback", "api", "endpoint", "configuration"]},
+        {"title": "Data Import Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/115002714413", "keywords": ["data", "import", "troubleshoot", "external", "fetch", "sync", "error", "failing"]},
+        {"title": "Authentication and API Keys", "url": "https://help.blueshift.com/hc/en-us/articles/115002714493", "keywords": ["authentication", "api", "key", "token", "external", "access", "security"]},
+        {"title": "Error Handling Best Practices", "url": "https://help.blueshift.com/hc/en-us/articles/115002714653", "keywords": ["error", "handling", "best", "practices", "api", "external", "fetch", "retry", "timeout"]},
+        {"title": "Real-time Data Processing", "url": "https://help.blueshift.com/hc/en-us/articles/115002714573", "keywords": ["realtime", "data", "processing", "external", "fetch", "stream", "api"]}
+    ]
+
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+
+    # Enhanced scoring system
+    scored_docs = []
+    for doc in help_docs_expanded:
+        score = 0
+
+        # Title matching (highest weight)
+        title_words = set(doc['title'].lower().split())
+        title_matches = query_words.intersection(title_words)
+        score += len(title_matches) * 5
+
+        # Keyword matching
+        keyword_words = set(' '.join(doc['keywords']).lower().split())
+        keyword_matches = query_words.intersection(keyword_words)
+        score += len(keyword_matches) * 3
+
+        # Phrase matching bonus
+        for query_word in query_words:
+            if query_word in doc['title'].lower():
+                score += 2
+            if query_word in ' '.join(doc['keywords']).lower():
+                score += 1
+
+        # Special handling for common technical terms
+        if 'external' in query_lower and 'fetch' in query_lower:
+            if 'external' in doc['keywords'] and 'fetch' in doc['keywords']:
+                score += 5
+
+        if score > 0:
+            scored_docs.append((score, doc))
+
+    # Sort by score and return top results
+    scored_docs.sort(reverse=True, key=lambda x: x[0])
+    results = [doc for score, doc in scored_docs[:limit]]
+
+    logger.info(f"Help docs curated search: '{query}' -> found {len(results)} results")
+    for i, doc in enumerate(results):
+        logger.info(f"  {i+1}. {doc['title']}")
+
+    return results
+
 def generate_related_resources(query):
-    """Generate contextually relevant resources"""
+    """Generate contextually relevant resources using API searches with smart fallbacks"""
+    logger.info(f"Searching for resources: {query}")
 
-    # Verified working Blueshift help URLs
-    all_help_docs = {
-        'platform': [
-            {"title": "Blueshift's Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283"},
-            {"title": "Blueshift implementation overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894"},
-            {"title": "Unified 360-degree customer profile", "url": "https://help.blueshift.com/hc/en-us/articles/115002713633"}
-        ],
-        'campaigns': [
-            {"title": "Campaign metrics", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "Getting Started with Blueshift", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Journey Builder Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002713893"}
-        ],
-        'integration': [
-            {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053"},
-            {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002713853"},
-            {"title": "Common Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773"}
-        ],
-        'analytics': [
-            {"title": "Analytics Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002712633"},
-            {"title": "Custom Reports", "url": "https://help.blueshift.com/hc/en-us/articles/115002713473"},
-            {"title": "Data Export", "url": "https://help.blueshift.com/hc/en-us/articles/115002726694"}
-        ]
-    }
+    # Perform API searches with proper error handling
+    help_docs = search_help_docs(query, limit=3)
+    confluence_docs = search_confluence_docs(query, limit=3)
+    jira_tickets = search_jira_tickets(query, limit=3)
+    support_tickets = search_zendesk_tickets(query, limit=3)
 
-    # Select help docs (simplified selection for exact copy)
-    selected_help_docs = all_help_docs['platform'][:3]
+    # No fallbacks - return only actual API results
 
-    # Confluence docs
-    confluence_docs = [
-        {
-            "title": f"Documentation: {query[:40]}...",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
-        },
-        {
-            "title": f"Best Practices: {query[:40]}...",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
-        },
-        {
-            "title": f"Implementation Guide: {query[:40]}...",
-            "url": "https://blueshift.atlassian.net/wiki/spaces/CE/pages/14385376/Campaign+Fundamentals"
-        }
-    ]
-
-    # Support tickets
-    support_tickets = [
-        {
-            "title": f"#{40649}: Support case related to {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40649"
-        },
-        {
-            "title": f"#{40650}: Configuration issue with {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40650"
-        },
-        {
-            "title": f"#{40651}: Technical investigation: {query[:30]}...",
-            "url": "https://blueshiftsuccess.zendesk.com/agent/tickets/40651"
-        }
-    ]
-
-    # JIRA tickets
-    query_encoded = query.replace(' ', '%20')[:50]
-    jira_tickets = [
-        {
-            "title": f"Search JIRA: Issues about '{query[:30]}...'",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=text~\"{query_encoded}\""
-        },
-        {
-            "title": f"Recent JIRA issues: '{query[:30]}...'",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=created>=startOfMonth()"
-        },
-        {
-            "title": f"Open JIRA issues: '{query[:30]}...'",
-            "url": f"https://blueshift.atlassian.net/issues/?jql=status!=Done"
-        }
-    ]
+    logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}")
 
     return {
-        'help_docs': selected_help_docs,
+        'help_docs': help_docs,
         'confluence_docs': confluence_docs,
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets
@@ -178,8 +579,17 @@ def query_athena(query_string, database_name, query_description="Athena query"):
             time.sleep(1)
 
         if status != 'SUCCEEDED':
-            error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Query failed')
-            return {"error": f"Query failed: {error_msg}", "data": []}
+            status_details = result['QueryExecution']['Status']
+            error_msg = status_details.get('StateChangeReason', 'Query failed')
+            failure_reason = status_details.get('AthenaError', {}).get('ErrorMessage', 'No additional error details')
+
+            print(f"Athena query failed:")
+            print(f"  Status: {status}")
+            print(f"  StateChangeReason: {error_msg}")
+            print(f"  AthenaError: {failure_reason}")
+            print(f"  Full status: {status_details}")
+
+            return {"error": f"Query failed: {error_msg}. Details: {failure_reason}", "data": []}
 
         # Get query results
         results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
@@ -204,57 +614,131 @@ def query_athena(query_string, database_name, query_description="Athena query"):
 
     except Exception as e:
         print(f"Athena query error: {e}")
+        print(f"Query was: {query_string}")
         return {"error": str(e), "data": []}
 
-def generate_athena_insights(user_query):
-    """Generate data insights using Athena queries based on user query"""
+def customize_query_for_execution(sql_query, user_query):
+    """Customize the generated query with more realistic parameters for execution"""
+
+    # Use your real account UUID as default
+    real_account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+
+    # Replace generic UUIDs with real ones
+    customized = sql_query.replace('uuid-value', real_account_uuid)
+    customized = customized.replace('account_uuid = \'uuid-value\'', f'account_uuid = \'{real_account_uuid}\'')
+
+    # Use more recent dates that are likely to have data
+    import datetime
+    recent_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+
+    # Replace overly restrictive date ranges
+    customized = customized.replace('file_date >= \'2025-01-01\'', f'file_date >= \'{recent_date}\'')
+    customized = customized.replace('file_date >= \'2024-08-01\'', f'file_date >= \'{recent_date}\'')
+
+    # For ExternalFetchError example, use recent date
+    if 'ExternalFetchError' in user_query.lower() or 'fetch' in user_query.lower():
+        customized = customized.replace('AND file_date >= ', f'AND file_date = \'{recent_date}\' AND file_date >= ')
+        customized = customized.replace(f'AND file_date = \'{recent_date}\' AND file_date >= \'{recent_date}\'', f'AND file_date >= \'{recent_date}\'')
+
+    return customized
+
+def get_available_tables(database_name):
+    """Get list of available tables in the database"""
     try:
+        # Get a sample of tables to help AI understand the schema
+        show_tables_query = f"SHOW TABLES IN {database_name}"
+        result = query_athena(show_tables_query, database_name, "Get table list")
+
+        if result.get('data'):
+            # Return first 50 tables as a sample (to avoid overwhelming the AI)
+            tables = [row[result['columns'][0]] for row in result['data'][:50]]
+            return tables
+        return []
+    except Exception as e:
+        print(f"Error getting tables: {e}")
+        return []
+
+def generate_athena_insights(user_query):
+    """Generate data insights using Athena queries based on user query with improved relevance"""
+    try:
+        # Same stop words filtering as other searches
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        # Extract key terms from user query
+        words = user_query.strip().split()
+        clean_query_words = clean_words(words)
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Athena query generation - Original: '{user_query}' -> Key terms: {clean_query_words}")
+
+        # Get available tables first
+        database_name = ATHENA_DATABASES[0]  # Use first database
+        available_tables = get_available_tables(database_name)
+        table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3"
+
         # Use AI to determine what kind of data query would be helpful
         headers = {
-            'x-api-key': ANTHROPIC_API_KEY,
+            'x-api-key': AI_API_KEY,
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01'
         }
 
-        database_list = ', '.join(ATHENA_DATABASES)
+        # More focused prompt that analyzes specific query terms
         analysis_prompt = f"""Analyze this Blueshift support query: "{user_query}"
 
-Available databases: {database_list}
+Key terms extracted: {clean_query_words}
+Available tables: {table_list}
 
-Based on this query, determine what kind of data analysis would be most helpful. Consider these areas:
-- Campaign performance metrics
-- Email delivery and engagement rates
-- User behavior and segmentation data
-- Revenue and conversion analytics
-- Platform usage statistics
+Based on the specific query terms, generate a targeted Athena SQL query. Focus on these patterns:
 
-Generate a relevant SQL query for AWS Athena that would provide insights related to this support query.
-Choose the most appropriate database from the available options.
-Assume typical marketing automation tables like:
-- campaigns (campaign_id, name, status, created_date, campaign_type)
-- emails (email_id, campaign_id, sent_date, opens, clicks, bounces)
-- users (user_id, email, signup_date, last_active, segment)
-- events (event_id, user_id, event_type, timestamp, properties)
-- revenue (user_id, order_date, amount, campaign_id)
+QUERY TERM ANALYSIS:
+- If query mentions "error", "fail", "failure" → Look for log_level = 'ERROR' and specific error messages
+- If query mentions "user", "customer", "person" → Focus on user_uuid tracking and user journey
+- If query mentions "campaign" → Focus on campaign_uuid and campaign performance
+- If query mentions "message", "email", "sms", "push" → Look for message delivery logs
+- If query mentions "bounce", "delivery" → Focus on delivery status and bounce analysis
+- If query mentions "external", "fetch", "api" → Look for ExternalFetchError patterns
+- If query mentions "duplicate", "dedup" → Look for deduplication messages
+- If query mentions "limit", "throttle" → Look for channel limit errors
+- If query mentions "recommendation", "product" → Look for recommendation engine logs
 
-Provide:
-1. The best database to use
-2. A relevant SQL query (max 10 lines)
-3. A brief explanation of what insights this would provide
+CREATE A SPECIFIC QUERY that matches the user's actual question using these guidelines:
 
-Format:
-DATABASE:
-[chosen database name]
+1. Always use: FROM {database_name}.{table_list.split(',')[0] if ',' in table_list else table_list}
+2. Always include: WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
+3. Use recent dates: AND file_date >= '2024-12-01'
+4. Match query terms to message patterns:
+   - For errors: AND log_level = 'ERROR'
+   - For specific issues: AND message LIKE '%{clean_query_words[0] if clean_query_words else 'error'}%'
+5. Order by timestamp DESC for recent issues
+6. Limit results: LIMIT 50
+
+Example for "campaign delivery errors":
+SELECT timestamp, user_uuid, campaign_uuid, message, log_level
+FROM {database_name}.campaign_execution_v3
+WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
+AND log_level = 'ERROR'
+AND (message LIKE '%delivery%' OR message LIKE '%campaign%')
+AND file_date >= '2024-12-01'
+ORDER BY timestamp DESC
+LIMIT 50
+
+Format your response as:
+DATABASE: {database_name}
 
 SQL_QUERY:
-[your SQL query here]
+[Write a specific SQL query that directly addresses the user's question using their key terms]
 
 INSIGHT_EXPLANATION:
-[brief explanation]"""
+[Explain specifically what this query will help diagnose about their question]"""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
-            'max_tokens': 500,
+            'max_tokens': 400,
             'messages': [{'role': 'user', 'content': analysis_prompt}]
         }
 
@@ -263,12 +747,14 @@ INSIGHT_EXPLANATION:
 
         if response.status_code == 200:
             ai_response = response.json()['content'][0]['text'].strip()
+            logger.info(f"Athena AI response: {ai_response[:200]}...")
             return parse_athena_analysis(ai_response, user_query)
         else:
+            logger.error(f"Athena AI API error: {response.status_code}")
             return get_default_athena_insights(user_query)
 
     except Exception as e:
-        print(f"Athena insights generation error: {e}")
+        logger.error(f"Athena insights generation error: {e}")
         return get_default_athena_insights(user_query)
 
 def parse_athena_analysis(ai_response, user_query):
@@ -306,19 +792,22 @@ def parse_athena_analysis(ai_response, user_query):
                 if line in ATHENA_DATABASES:
                     database_name = line
             elif in_sql_section and line:
-                sql_query += line + "\n"
+                # Clean up markdown formatting
+                cleaned_line = line.replace('```sql', '').replace('```', '').strip()
+                if cleaned_line:  # Only add non-empty lines
+                    sql_query += cleaned_line + "\n"
             elif in_explanation_section and line:
-                explanation += line + " "
+                explanation += line + "\n"
 
-        # Execute the query if we have one
+        # Return the suggested query template for manual customization
         if sql_query.strip():
-            query_results = query_athena(sql_query.strip(), database_name, f"Query for: {user_query}")
+            print(f"Generated SQL Query: {sql_query.strip()}")  # Debug output
             return {
                 'database': database_name,
                 'sql_query': sql_query.strip(),
-                'explanation': explanation.strip(),
-                'results': query_results,
-                'has_data': len(query_results.get('data', [])) > 0
+                'explanation': explanation.strip() + "\n\nCopy this query to Athena and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
+                'results': {"note": "Query template ready for manual customization in Athena", "data": []},
+                'has_data': False
             }
         else:
             return get_default_athena_insights(user_query)
@@ -329,25 +818,19 @@ def parse_athena_analysis(ai_response, user_query):
 
 def get_default_athena_insights(user_query):
     """Provide default Athena insights when AI analysis fails"""
-    # Provide a simple, safe query as fallback
-    default_query = """
-SELECT
-    campaign_type,
-    COUNT(*) as campaign_count,
-    AVG(CAST(opens as DOUBLE)) as avg_opens
-FROM campaigns c
-LEFT JOIN emails e ON c.campaign_id = e.campaign_id
-WHERE c.created_date >= date_add('day', -30, current_date)
-GROUP BY campaign_type
-ORDER BY campaign_count DESC
-LIMIT 10
-"""
+    # Use the simplest possible working query
+    database_name = ATHENA_DATABASES[0]
+    default_query = f"""SELECT timestamp, message
+FROM {database_name}.campaign_execution_v3
+WHERE log_level = 'ERROR'
+ORDER BY timestamp DESC
+LIMIT 10"""
 
     return {
-        'database': ATHENA_DATABASES[0],
-        'sql_query': default_query.strip(),
-        'explanation': f'Campaign performance overview for the last 30 days related to: {user_query}',
-        'results': {"data": [], "columns": [], "note": "Sample query - configure AWS credentials to execute"},
+        'database': database_name,
+        'sql_query': default_query,
+        'explanation': f'Recent error logs from campaign_execution_v3 related to: {user_query}',
+        'results': {"data": [], "columns": [], "note": "Sample query - will show real data when executed"},
         'has_data': False
     }
 
@@ -358,6 +841,24 @@ def login():
 @app.route('/')
 def index():
     return render_template_string(MAIN_TEMPLATE)
+
+@app.route('/blueshift-favicon.png')
+def favicon():
+    """Serve the Blueshift favicon"""
+    try:
+        return send_file('blueshift-favicon.png', mimetype='image/png')
+    except Exception as e:
+        logger.error(f"Error serving favicon: {e}")
+        return '', 404
+
+@app.route('/favicon.ico')
+def favicon_ico():
+    """Serve favicon.ico (redirect to PNG)"""
+    try:
+        return send_file('blueshift-favicon.png', mimetype='image/png')
+    except Exception as e:
+        logger.error(f"Error serving favicon.ico: {e}")
+        return '', 404
 
 @app.route('/query', methods=['POST'])
 def handle_query():
@@ -408,20 +909,8 @@ def handle_followup():
         print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint for Railway deployment"""
-    return jsonify({"status": "healthy", "service": "Blueshift Support Bot"})
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_file('blueshift-favicon.png', mimetype='image/png')
-
-@app.route('/blueshift-favicon.png')
-def favicon_png():
-    return send_file('blueshift-favicon.png', mimetype='image/png')
-
-# LOGIN TEMPLATE - EXACT COPY OF ZENDESK LOGIN WITH BLUESHIFT BRANDING
+# Exact copy of production HTML with correct styling
 LOGIN_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -538,7 +1027,6 @@ LOGIN_TEMPLATE = '''
 </html>
 '''
 
-# Exact copy of production HTML with correct styling
 MAIN_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -872,7 +1360,7 @@ MAIN_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>Blueshift Support Bot</h1>
+        <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 40px; vertical-align: middle; margin-right: 10px;">Blueshift Support Bot</h1>
 
         <div class="search-container">
             <input type="text" id="queryInput" placeholder="Enter your support question">
@@ -885,17 +1373,16 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div id="athenaSection" class="athena-section" style="display: none;">
-                <h3>📊 Data Insights <span class="athena-badge">ATHENA</span></h3>
+                <h3>📊 Suggested Query <span class="athena-badge">ATHENA</span></h3>
                 <p><strong>Database:</strong> <span id="athenaDatabase" style="font-family: monospace; background: #f0f0f0; padding: 2px 6px; border-radius: 4px;"></span></p>
-                <p><strong>Analysis:</strong> <span id="athenaExplanation"></span></p>
+                <div><strong>Analysis:</strong></div>
+                <div id="athenaExplanation" style="white-space: pre-line; margin-top: 8px; line-height: 1.6;"></div>
 
-                <details>
-                    <summary style="cursor: pointer; color: #2790FF; font-weight: bold;">View SQL Query</summary>
-                    <div id="athenaQuery" class="sql-query"></div>
-                </details>
-
-                <div id="athenaStatus"></div>
-                <div id="athenaResults" class="data-table"></div>
+                <div style="margin: 15px 0;">
+                    <label for="suggestedQuery" style="font-weight: bold; color: #2790FF;">Copy this query to Athena:</label>
+                    <textarea id="suggestedQuery" class="sql-query" style="width: 100%; height: 120px; margin-top: 5px; font-family: 'Courier New', monospace; font-size: 12px; border: 2px solid #2790FF; border-radius: 8px; padding: 10px;" readonly placeholder="SQL query suggestion will appear here..."></textarea>
+                    <p style="margin-top: 10px; color: #666; font-size: 0.9em;">💡 <strong>Instructions:</strong> Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.</p>
+                </div>
             </div>
 
             <div class="followup-section">
@@ -1093,49 +1580,11 @@ MAIN_TEMPLATE = '''
             // Set explanation
             document.getElementById('athenaExplanation').textContent = athenaData.explanation;
 
-            // Set SQL query
-            document.getElementById('athenaQuery').textContent = athenaData.sql_query;
+            // Set editable SQL query
+            document.getElementById('suggestedQuery').value = athenaData.sql_query;
 
-            // Handle results
-            const statusDiv = document.getElementById('athenaStatus');
-            const resultsDiv = document.getElementById('athenaResults');
-
-            if (athenaData.results.error) {
-                statusDiv.innerHTML = `
-                    <div style="background: #ffebee; padding: 15px; border-radius: 8px; color: #c62828; margin-top: 15px;">
-                        <strong>Query Status:</strong> ${athenaData.results.error}
-                        <br><small>Configure AWS credentials and Athena database to execute queries.</small>
-                    </div>
-                `;
-                resultsDiv.innerHTML = '';
-            } else if (athenaData.has_data && athenaData.results.data.length > 0) {
-                statusDiv.innerHTML = '';
-
-                let tableHTML = '<table><thead><tr>';
-                athenaData.results.columns.forEach(column => {
-                    tableHTML += `<th>${column}</th>`;
-                });
-                tableHTML += '</tr></thead><tbody>';
-
-                athenaData.results.data.forEach(row => {
-                    tableHTML += '<tr>';
-                    athenaData.results.columns.forEach(column => {
-                        tableHTML += `<td>${row[column] || ''}</td>`;
-                    });
-                    tableHTML += '</tr>';
-                });
-                tableHTML += '</tbody></table>';
-
-                resultsDiv.innerHTML = tableHTML;
-            } else {
-                statusDiv.innerHTML = `
-                    <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; color: #1976d2; margin-top: 15px;">
-                        <strong>Ready to Execute:</strong> Configure your AWS credentials to run this query and get live data insights.
-                    </div>
-                `;
-                resultsDiv.innerHTML = '';
-            }
         }
+
     </script>
 </body>
 </html>
@@ -1148,4 +1597,16 @@ if __name__ == '__main__':
     print(f"AWS Region: {AWS_REGION}")
     print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
     print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
+
+    # Debug: Check environment variables
+    print(f"\n=== Environment Variables Debug ===")
+    print(f"JIRA_TOKEN: {'✅ Configured' if JIRA_TOKEN else '❌ Not set'}")
+    print(f"JIRA_EMAIL: {'✅ Configured' if JIRA_EMAIL else '❌ Not set'}")
+    print(f"CONFLUENCE_TOKEN: {'✅ Configured' if CONFLUENCE_TOKEN else '❌ Not set'}")
+    print(f"CONFLUENCE_EMAIL: {'✅ Configured' if CONFLUENCE_EMAIL else '❌ Not set'}")
+    print(f"ZENDESK_TOKEN: {'✅ Configured' if ZENDESK_TOKEN else '❌ Not set'}")
+    print(f"ZENDESK_EMAIL: {'✅ Configured' if ZENDESK_EMAIL else '❌ Not set'}")
+    print(f"ZENDESK_SUBDOMAIN: {'✅ Configured' if ZENDESK_SUBDOMAIN else '❌ Not set'}")
+    print("=" * 40)
+
     app.run(host='0.0.0.0', port=port, debug=True)

@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, send_file
+from flask import Flask, request, jsonify, render_template_string, send_file, session, redirect, url_for
 import requests
 import os
 import boto3
@@ -16,6 +16,7 @@ except ImportError:
     pass  # dotenv not installed, continue without it
 
 app = Flask(__name__)
+app.secret_key = 'blueshift_support_bot_secret_key_2023'
 
 # Use the correct Claude API key
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
@@ -834,12 +835,27 @@ LIMIT 10"""
         'has_data': False
     }
 
-@app.route('/login')
+@app.route('/login', methods=['GET', 'POST'])
 def login():
+    if request.method == 'POST':
+        data = request.get_json()
+        username = data.get('username', '')
+        password = data.get('password', '')
+
+        # Check credentials
+        if username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
+            session['logged_in'] = True
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Invalid username or password'})
+
     return render_template_string(LOGIN_TEMPLATE)
 
 @app.route('/')
 def index():
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
     return render_template_string(MAIN_TEMPLATE)
 
 @app.route('/blueshift-favicon.png')
@@ -862,6 +878,10 @@ def favicon_ico():
 
 @app.route('/query', methods=['POST'])
 def handle_query():
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return jsonify({"error": "Authentication required"}), 401
+
     try:
         data = request.get_json()
         query = data.get('query', '').strip()
@@ -891,6 +911,10 @@ def handle_query():
 @app.route('/followup', methods=['POST'])
 def handle_followup():
     """Handle follow-up questions"""
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return jsonify({"error": "Authentication required"}), 401
+
     try:
         data = request.get_json()
         followup_query = data.get('query', '').strip()
@@ -1001,17 +1025,37 @@ LOGIN_TEMPLATE = '''
             const password = document.getElementById('password').value;
             const errorDiv = document.getElementById('error');
 
-            // Demo authentication
-            if (username === 'Blueshift Support' && password === 'BlueS&n@*9072!') {
-                // Redirect to main app
-                window.location.href = '/';
-            } else {
-                errorDiv.textContent = 'Invalid username or password';
+            // Send login request to server
+            fetch('/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Redirect to main app
+                    window.location.href = '/';
+                } else {
+                    errorDiv.textContent = data.error || 'Invalid username or password';
+                    errorDiv.style.display = 'block';
+                    setTimeout(() => {
+                        errorDiv.style.display = 'none';
+                    }, 3000);
+                }
+            })
+            .catch(error => {
+                errorDiv.textContent = 'Login failed. Please try again.';
                 errorDiv.style.display = 'block';
                 setTimeout(() => {
                     errorDiv.style.display = 'none';
                 }, 3000);
-            }
+            });
         });
 
         // Clear error on input

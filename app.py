@@ -711,29 +711,28 @@ QUERY TERM ANALYSIS:
 CREATE A SPECIFIC QUERY that matches the user's actual question using these guidelines:
 
 1. Always use: FROM {database_name}.{table_list.split(',')[0] if ',' in table_list else table_list}
-2. Always include: WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
+2. Always include: WHERE account_uuid = 'your_account_uuid'
 3. Use recent dates: AND file_date >= '2024-12-01'
 4. Match query terms to message patterns:
    - For errors: AND log_level = 'ERROR'
    - For specific issues: AND message LIKE '%{clean_query_words[0] if clean_query_words else 'error'}%'
 5. Order by timestamp DESC for recent issues
-6. Limit results: LIMIT 50
+6. NO LIMIT clause
+
+IMPORTANT FORMATTING REQUIREMENTS:
+- Write the query on a SINGLE LINE with proper spacing
+- Use lowercase for SQL keywords (select, from, where, and, or, like, order by)
+- Use single quotes for string values
+- Use format like: select timestamp, user_uuid, campaign_uuid, trigger_uuid, message from customer_campaign_logs.campaign_execution_v3 where account_uuid = 'your_account_uuid' and campaign_uuid = 'your_campaign_uuid' and user_uuid = 'your_user_uuid' and log_level = 'ERROR' AND message LIKE '%cloud%' OR message LIKE '%CloudApp%' OR message LIKE '%ApiFailure%' OR message LIKE '%ExternalFetchError%' ORDER BY timestamp DESC
 
 Example for "campaign delivery errors":
-SELECT timestamp, user_uuid, campaign_uuid, message, log_level
-FROM {database_name}.campaign_execution_v3
-WHERE account_uuid = 'YOUR_ACCOUNT_UUID'
-AND log_level = 'ERROR'
-AND (message LIKE '%delivery%' OR message LIKE '%campaign%')
-AND file_date >= '2024-12-01'
-ORDER BY timestamp DESC
-LIMIT 50
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message from {database_name}.campaign_execution_v3 where account_uuid = 'your_account_uuid' and campaign_uuid = 'your_campaign_uuid' and user_uuid = 'your_user_uuid' and log_level = 'ERROR' and message LIKE '%delivery%' OR message LIKE '%campaign%' ORDER BY timestamp DESC
 
 Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Write a specific SQL query that directly addresses the user's question using their key terms]
+[Write a single-line SQL query that directly addresses the user's question using their key terms]
 
 INSIGHT_EXPLANATION:
 [Explain specifically what this query will help diagnose about their question]"""

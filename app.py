@@ -62,7 +62,7 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift Expert with deep technical expertise. Provide expert-level support responses.
+        prompt = f"""You are a Blueshift Support agent with deep technical expertise. Provide expert-level support responses.
 
 Customer Query: {query}
 
@@ -77,9 +77,12 @@ RESPONSE REQUIREMENTS:
 
 3. BLUESHIFT-SPECIFIC KNOWLEDGE:
    - Blueshift is a CDP (Customer Data Platform)
+   - API Base URL: https://api.getblueshift.com
    - Custom attributes are typically managed through:
      * Events API (https://developer.blueshift.com/reference/post_api-v1-event)
-     * Customer API (https://developer.blueshift.com/reference/post_api-v1-customer)
+       Endpoint: POST https://api.getblueshift.com/api/v1/event
+     * Customer API (https://developer.blueshift.com/reference/post_api-v1-customers)
+       Endpoint: POST https://api.getblueshift.com/api/v1/customers
      * Data imports/CSV uploads
      * SDK implementations (Web, iOS, Android)
    - There is NO "Track API" - avoid this term completely
@@ -95,7 +98,16 @@ RESPONSE REQUIREMENTS:
 5. TECHNICAL ACCURACY:
    - Use correct Blueshift terminology
    - Reference actual API endpoints with full URLs
-   - Provide realistic code examples if needed
+   - When providing API examples, use this exact curl format:
+     curl --request POST \\
+          --url https://api.getblueshift.com/api/v1/customers \\
+          --header 'accept: application/json' \\
+          --header 'content-type: application/json' \\
+          --data '{
+       "email": "user@example.com",
+       "custom_attribute": "value"
+     }'
+   - Always include proper headers and realistic data examples
    - Direct users to proper documentation sections
 
 Be helpful, precise, and honest about what you do/don't know about Blueshift's platform."""
@@ -563,14 +575,14 @@ def search_blueshift_api_docs(query, limit=3):
         # Use WebFetch to get relevant API documentation
         import requests
 
-        # Search the main API reference page with actual endpoint URLs
+        # Search the main API reference page with working endpoint URLs
         api_docs = [
             {"title": "Blueshift API Documentation - Overview", "url": "https://developer.blueshift.com/reference/welcome", "keywords": ["api", "developer", "documentation", "reference", "guide", "overview"]},
             {"title": "Events API - POST /api/v1/event", "url": "https://developer.blueshift.com/reference/post_api-v1-event", "keywords": ["events", "api", "custom", "attribute", "user", "tracking", "data", "event"]},
-            {"title": "Customer API - POST /api/v1/customer", "url": "https://developer.blueshift.com/reference/post_api-v1-customer", "keywords": ["customer", "user", "profile", "custom", "attribute", "identify"]},
+            {"title": "Customer API - POST /api/v1/customers", "url": "https://developer.blueshift.com/reference/post_api-v1-customers", "keywords": ["customer", "user", "profile", "custom", "attribute", "identify", "customers"]},
+            {"title": "Customer Search API - GET /api/v1/customers", "url": "https://developer.blueshift.com/reference/get_api-v1-customers", "keywords": ["customer", "search", "user", "profile", "lookup"]},
             {"title": "Campaigns API - GET /api/v1/campaigns", "url": "https://developer.blueshift.com/reference/get_api-v1-campaigns", "keywords": ["campaigns", "api", "messaging", "email", "push", "sms"]},
             {"title": "Catalog API - POST /api/v1/catalog", "url": "https://developer.blueshift.com/reference/post_api-v1-catalog", "keywords": ["catalog", "products", "recommendations", "data"]},
-            {"title": "Segments API - GET /api/v1/segments", "url": "https://developer.blueshift.com/reference/get_api-v1-segments", "keywords": ["segments", "audience", "targeting", "users"]},
         ]
 
         query_lower = query.lower()

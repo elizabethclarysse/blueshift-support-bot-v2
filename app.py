@@ -1550,16 +1550,6 @@ MAIN_TEMPLATE = '''
 
         <div class="features">
             <div class="feature">
-                <h3>🔗 API Documentation</h3>
-                <ul>
-                    <li>Official Blueshift API reference</li>
-                    <li>Track, Identify, and User APIs</li>
-                    <li>SDK integration guides</li>
-                    <li>Code examples and endpoints</li>
-                </ul>
-            </div>
-
-            <div class="feature">
                 <h3>🎫 Related JIRAs</h3>
                 <ul>
                     <li>Links to relevant JIRA tickets and bugs</li>
@@ -1570,12 +1560,12 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div class="feature">
-                <h3>📚 Help Docs</h3>
+                <h3>📚 Help Docs & APIs</h3>
                 <ul>
                     <li>Official Blueshift help center articles</li>
+                    <li>API documentation and endpoints</li>
+                    <li>SDK integration guides</li>
                     <li>Setup and configuration instructions</li>
-                    <li>Best practices and tutorials</li>
-                    <li>User guides and FAQs</li>
                 </ul>
             </div>
 
@@ -1586,6 +1576,16 @@ MAIN_TEMPLATE = '''
                     <li>Team knowledge base articles</li>
                     <li>Troubleshooting runbooks</li>
                     <li>Engineering documentation</li>
+                </ul>
+            </div>
+
+            <div class="feature">
+                <h3>🎯 Zendesk</h3>
+                <ul>
+                    <li>Customer support ticket analysis</li>
+                    <li>Similar issue resolutions</li>
+                    <li>Support team responses</li>
+                    <li>Escalation procedures</li>
                 </ul>
             </div>
         </div>
@@ -1681,10 +1681,9 @@ MAIN_TEMPLATE = '''
             sourcesGrid.innerHTML = '';
 
             const categories = [
-                { key: 'api_docs', title: '🔗 API Documentation', icon: '🔗' },
-                { key: 'help_docs', title: '📚 Help Docs', icon: '📚' },
-                { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
                 { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
+                { key: 'help_docs', title: '📚 Help Docs & APIs', icon: '📚' },
+                { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
                 { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
             ];
 
@@ -1693,7 +1692,14 @@ MAIN_TEMPLATE = '''
                 categoryDiv.className = 'source-category';
                 categoryDiv.innerHTML = `<h4>${category.title}</h4>`;
 
-                const items = resources[category.key] || [];
+                // For Help Docs, combine both help_docs and api_docs
+                let items = [];
+                if (category.key === 'help_docs') {
+                    items = [...(resources['help_docs'] || []), ...(resources['api_docs'] || [])];
+                } else {
+                    items = resources[category.key] || [];
+                }
+
                 items.forEach(item => {
                     const itemDiv = document.createElement('div');
                     itemDiv.className = 'source-item';

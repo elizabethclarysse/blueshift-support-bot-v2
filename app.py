@@ -62,26 +62,30 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift expert with deep knowledge of the Blueshift CDP platform. Provide comprehensive, detailed answers for support queries about Blueshift's actual features and interface.
+        prompt = f"""You are a Blueshift expert. Answer support queries about Blueshift CDP platform functionality.
 
 Query: {query}
 
-IMPORTANT: Only provide information about actual Blueshift platform features and interfaces. Do not invent UI paths, menu options, or configuration settings that don't exist in Blueshift.
+CRITICAL REQUIREMENTS:
+- DO NOT invent navigation paths like "Settings > User Attributes" or other UI menus that don't exist
+- DO NOT provide step-by-step dashboard instructions unless you are certain they exist
+- When discussing APIs, always reference the actual Blueshift API documentation at https://developer.blueshift.com
+- Focus on proven methods: API integration, SDK implementation, data imports
 
-For custom attributes in Blueshift, the correct process involves:
-- Using the Blueshift API to create custom user attributes
-- Configuring attribute mappings through data imports
-- Setting up custom attributes through SDK implementations
-- Using the Blueshift dashboard's actual navigation structure
+For custom attributes specifically:
+- Custom attributes are created through API calls to the Track API
+- Full API documentation is available at https://developer.blueshift.com/reference/welcome
+- Custom attributes can also be created through data uploads/imports
+- DO NOT reference non-existent dashboard settings or menu paths
 
-Provide a thorough, professional response with:
-1. Clear explanation of the issue/topic specific to Blueshift
-2. Accurate step-by-step solution using actual Blueshift features
-3. Code examples or API documentation when relevant
-4. Best practices specific to Blueshift implementation
-5. Related Blueshift features or considerations
+Provide a response that:
+1. Explains the concept clearly
+2. References actual API endpoints with proper URLs
+3. Provides working code examples
+4. Mentions data import alternatives
+5. Directs users to official documentation at https://developer.blueshift.com
 
-Be specific, actionable, and accurate to actual Blueshift functionality."""
+Always include proper API endpoint URLs and reference the developer documentation."""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -540,6 +544,63 @@ def search_help_docs(query, limit=3):
 
     return results
 
+def search_blueshift_api_docs(query, limit=3):
+    """Search Blueshift API documentation"""
+    try:
+        # Use WebFetch to get relevant API documentation
+        import requests
+
+        # Search the main API reference page
+        api_docs = [
+            {"title": "Blueshift API Reference - Track API", "url": "https://developer.blueshift.com/reference/track", "keywords": ["track", "api", "custom", "attribute", "user", "event"]},
+            {"title": "Blueshift API Reference - Identify API", "url": "https://developer.blueshift.com/reference/identify", "keywords": ["identify", "user", "profile", "custom", "attribute"]},
+            {"title": "Blueshift API Reference - User Attributes", "url": "https://developer.blueshift.com/reference/user-attributes", "keywords": ["user", "attribute", "custom", "profile", "data"]},
+            {"title": "Blueshift API Reference - Data Import", "url": "https://developer.blueshift.com/reference/data-import", "keywords": ["import", "data", "upload", "csv", "batch"]},
+            {"title": "Blueshift Developer Documentation", "url": "https://developer.blueshift.com/reference/welcome", "keywords": ["api", "developer", "documentation", "reference", "guide"]},
+            {"title": "Blueshift SDK Documentation", "url": "https://developer.blueshift.com/docs/sdks", "keywords": ["sdk", "javascript", "ios", "android", "integration"]},
+        ]
+
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+
+        # Score based on keyword matching
+        scored_docs = []
+        for doc in api_docs:
+            score = 0
+
+            # Title matching
+            title_words = set(doc['title'].lower().split())
+            title_matches = query_words.intersection(title_words)
+            score += len(title_matches) * 5
+
+            # Keyword matching
+            keyword_words = set(' '.join(doc['keywords']).lower().split())
+            keyword_matches = query_words.intersection(keyword_words)
+            score += len(keyword_matches) * 3
+
+            # Special scoring for specific terms
+            if any(word in query_lower for word in ['custom', 'attribute']):
+                if 'attribute' in doc['keywords']:
+                    score += 10
+
+            if 'api' in query_lower:
+                if 'api' in doc['keywords']:
+                    score += 5
+
+            if score > 0:
+                scored_docs.append((score, doc))
+
+        # Sort by score and return top results
+        scored_docs.sort(reverse=True, key=lambda x: x[0])
+        results = [{"title": doc['title'], "url": doc['url']} for score, doc in scored_docs[:limit]]
+
+        logger.info(f"Blueshift API docs search: '{query}' -> found {len(results)} results")
+        return results
+
+    except Exception as e:
+        logger.error(f"Blueshift API docs search error: {e}")
+        return []
+
 def generate_related_resources(query):
     """Generate contextually relevant resources using API searches with smart fallbacks"""
     logger.info(f"Searching for resources: {query}")
@@ -549,16 +610,18 @@ def generate_related_resources(query):
     confluence_docs = search_confluence_docs(query, limit=3)
     jira_tickets = search_jira_tickets(query, limit=3)
     support_tickets = search_zendesk_tickets(query, limit=3)
+    api_docs = search_blueshift_api_docs(query, limit=3)
 
     # No fallbacks - return only actual API results
 
-    logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}")
+    logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
 
     return {
         'help_docs': help_docs,
         'confluence_docs': confluence_docs,
         'jira_tickets': jira_tickets,
-        'support_tickets': support_tickets
+        'support_tickets': support_tickets,
+        'api_docs': api_docs
     }
 
 def get_athena_client():
@@ -1487,6 +1550,16 @@ MAIN_TEMPLATE = '''
 
         <div class="features">
             <div class="feature">
+                <h3>🔗 API Documentation</h3>
+                <ul>
+                    <li>Official Blueshift API reference</li>
+                    <li>Track, Identify, and User APIs</li>
+                    <li>SDK integration guides</li>
+                    <li>Code examples and endpoints</li>
+                </ul>
+            </div>
+
+            <div class="feature">
                 <h3>🎫 Related JIRAs</h3>
                 <ul>
                     <li>Links to relevant JIRA tickets and bugs</li>
@@ -1500,9 +1573,9 @@ MAIN_TEMPLATE = '''
                 <h3>📚 Help Docs</h3>
                 <ul>
                     <li>Official Blueshift help center articles</li>
-                    <li>API documentation and guides</li>
                     <li>Setup and configuration instructions</li>
                     <li>Best practices and tutorials</li>
+                    <li>User guides and FAQs</li>
                 </ul>
             </div>
 
@@ -1512,16 +1585,7 @@ MAIN_TEMPLATE = '''
                     <li>Internal Confluence documentation</li>
                     <li>Team knowledge base articles</li>
                     <li>Troubleshooting runbooks</li>
-                </ul>
-            </div>
-
-            <div class="feature">
-                <h3>🎯 Zendesk</h3>
-                <ul>
-                    <li>Customer support ticket analysis</li>
-                    <li>Similar issue resolutions</li>
-                    <li>Support team responses</li>
-                    <li>Escalation procedures</li>
+                    <li>Engineering documentation</li>
                 </ul>
             </div>
         </div>
@@ -1617,6 +1681,7 @@ MAIN_TEMPLATE = '''
             sourcesGrid.innerHTML = '';
 
             const categories = [
+                { key: 'api_docs', title: '🔗 API Documentation', icon: '🔗' },
                 { key: 'help_docs', title: '📚 Help Docs', icon: '📚' },
                 { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
                 { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },

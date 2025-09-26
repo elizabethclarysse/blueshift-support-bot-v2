@@ -62,7 +62,7 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift Support agent with deep technical expertise. Provide expert-level support responses.
+        prompt = f"""You are a senior Blueshift Support agent with deep technical expertise. Provide expert-level support responses.
 
 Customer Query: {query}
 
@@ -103,10 +103,10 @@ RESPONSE REQUIREMENTS:
           --url https://api.getblueshift.com/api/v1/customers \\
           --header 'accept: application/json' \\
           --header 'content-type: application/json' \\
-          --data '{
+          --data '{{
        "email": "user@example.com",
        "custom_attribute": "value"
-     }'
+     }}'
    - Always include proper headers and realistic data examples
    - Direct users to proper documentation sections
 

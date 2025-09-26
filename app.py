@@ -69,14 +69,16 @@ Query: {query}
 CRITICAL REQUIREMENTS:
 - DO NOT invent navigation paths like "Settings > User Attributes" or other UI menus that don't exist
 - DO NOT provide step-by-step dashboard instructions unless you are certain they exist
-- When discussing APIs, always reference the actual Blueshift API documentation at https://developer.blueshift.com
-- Focus on proven methods: API integration, SDK implementation, data imports
+- When discussing APIs, only reference the actual Blueshift API documentation at https://developer.blueshift.com/reference/welcome
+- DO NOT mention "Track API" - Blueshift uses Events API and Customer API
+- Focus on proven methods: Events API, Customer API, data imports, SDK implementations
 
 For custom attributes specifically:
-- Custom attributes are created through API calls to the Track API
+- Custom attributes are sent through the Events API or Customer API
 - Full API documentation is available at https://developer.blueshift.com/reference/welcome
-- Custom attributes can also be created through data uploads/imports
-- DO NOT reference non-existent dashboard settings or menu paths
+- Custom attributes can also be created through data uploads/imports via CSV
+- Use SDK implementations (JavaScript, iOS, Android) for easier integration
+- DO NOT reference non-existent APIs like "Track API" or fake dashboard settings
 
 Provide a response that:
 1. Explains the concept clearly
@@ -550,14 +552,14 @@ def search_blueshift_api_docs(query, limit=3):
         # Use WebFetch to get relevant API documentation
         import requests
 
-        # Search the main API reference page
+        # Search the main API reference page with correct URLs
         api_docs = [
-            {"title": "Blueshift API Reference - Track API", "url": "https://developer.blueshift.com/reference/track", "keywords": ["track", "api", "custom", "attribute", "user", "event"]},
-            {"title": "Blueshift API Reference - Identify API", "url": "https://developer.blueshift.com/reference/identify", "keywords": ["identify", "user", "profile", "custom", "attribute"]},
-            {"title": "Blueshift API Reference - User Attributes", "url": "https://developer.blueshift.com/reference/user-attributes", "keywords": ["user", "attribute", "custom", "profile", "data"]},
-            {"title": "Blueshift API Reference - Data Import", "url": "https://developer.blueshift.com/reference/data-import", "keywords": ["import", "data", "upload", "csv", "batch"]},
-            {"title": "Blueshift Developer Documentation", "url": "https://developer.blueshift.com/reference/welcome", "keywords": ["api", "developer", "documentation", "reference", "guide"]},
-            {"title": "Blueshift SDK Documentation", "url": "https://developer.blueshift.com/docs/sdks", "keywords": ["sdk", "javascript", "ios", "android", "integration"]},
+            {"title": "Blueshift API Documentation - Overview", "url": "https://developer.blueshift.com/reference/welcome", "keywords": ["api", "developer", "documentation", "reference", "guide", "overview"]},
+            {"title": "Blueshift Events API", "url": "https://developer.blueshift.com/reference/welcome#events", "keywords": ["events", "api", "custom", "attribute", "user", "tracking", "data"]},
+            {"title": "Blueshift Customer API", "url": "https://developer.blueshift.com/reference/welcome#customer", "keywords": ["customer", "user", "profile", "custom", "attribute", "identify"]},
+            {"title": "Blueshift Campaigns API", "url": "https://developer.blueshift.com/reference/welcome#campaigns", "keywords": ["campaigns", "api", "messaging", "email", "push", "sms"]},
+            {"title": "Blueshift Catalog API", "url": "https://developer.blueshift.com/reference/welcome#catalog", "keywords": ["catalog", "products", "recommendations", "data"]},
+            {"title": "Blueshift Segments API", "url": "https://developer.blueshift.com/reference/welcome#segments", "keywords": ["segments", "audience", "targeting", "users"]},
         ]
 
         query_lower = query.lower()
@@ -1560,7 +1562,7 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div class="feature">
-                <h3>📚 Help Docs & APIs</h3>
+                <h3>📚 Help & APIs</h3>
                 <ul>
                     <li>Official Blueshift help center articles</li>
                     <li>API documentation and endpoints</li>
@@ -1682,7 +1684,7 @@ MAIN_TEMPLATE = '''
 
             const categories = [
                 { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
-                { key: 'help_docs', title: '📚 Help Docs & APIs', icon: '📚' },
+                { key: 'help_docs', title: '📚 Help & APIs', icon: '📚' },
                 { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
                 { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
             ];

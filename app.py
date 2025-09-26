@@ -62,7 +62,7 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a senior Blueshift Support agent with deep technical expertise. Provide expert-level support responses.
+        prompt = f"""You are a senior Blueshift Support Agent with deep technical expertise. Provide expert-level support responses.
 
 Customer Query: {query}
 
@@ -793,75 +793,58 @@ def generate_athena_insights(user_query):
             'anthropic-version': '2023-06-01'
         }
 
-        # More focused prompt that analyzes specific query terms
-        analysis_prompt = f"""Analyze this Blueshift support query: "{user_query}"
+        # Simple prompt matching actual query patterns from examples
+        analysis_prompt = f"""Generate a simple Athena SQL query for this Blueshift support question: "{user_query}"
 
-Key terms extracted: {clean_query_words}
-Available tables: {table_list}
+Available database: {database_name}
+Main table: campaign_execution_v3
 
-Based on the specific query terms, generate a targeted Athena SQL query. Focus on these patterns:
+Based on the user's question, create a SIMPLE query following these patterns:
 
-QUERY TERM ANALYSIS:
-- If query mentions "error", "fail", "failure" → Look for log_level = 'ERROR' and specific error messages
-- If query mentions "user", "customer", "person" → Focus on user_uuid tracking and user journey
-- If query mentions "campaign" → Focus on campaign_uuid and campaign performance
-- If query mentions "message", "email", "sms", "push" → Look for message delivery logs
-- If query mentions "bounce", "delivery" → Focus on delivery status and bounce analysis
-- If query mentions "external", "fetch", "api" → Look for ExternalFetchError patterns
-- If query mentions "duplicate", "dedup" → Look for deduplication messages
-- If query mentions "limit", "throttle" → Look for channel limit errors
-- If query mentions "recommendation", "product" → Look for recommendation engine logs
-
-CREATE A SPECIFIC QUERY that matches the user's actual question using these guidelines:
-
-1. Always use: FROM {database_name}.{table_list.split(',')[0] if ',' in table_list else table_list}
-2. Always include: WHERE account_uuid = 'your_account_uuid'
-3. Always include: and campaign_uuid = 'your_campaign_uuid' and user_uuid = 'your_user_uuid'
-4. Match query terms to message patterns:
-   - For errors: and log_level = 'ERROR'
-   - For specific issues: AND message LIKE '%{clean_query_words[0] if clean_query_words else 'error'}%'
-5. Order by timestamp DESC for recent issues
-6. NO LIMIT clause
-7. NO file_date conditions
-
-IMPORTANT FORMATTING REQUIREMENTS:
-- Write the query with each clause on a separate line
-- Use lowercase for most SQL keywords (select, from, where, and, or, order by) but use UPPERCASE for LIKE and ERROR
-- Use single quotes for string values
-- Do NOT include file_date conditions
-- Do NOT use parentheses around OR conditions
-- Use format exactly like this:
+For EXTERNAL FETCH errors:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
 and campaign_uuid = 'your_campaign_uuid'
 and user_uuid = 'your_user_uuid'
 and log_level = 'ERROR'
-AND message LIKE '%cloud%'
-OR message LIKE '%CloudApp%'
-OR message LIKE '%ApiFailure%'
-OR message LIKE '%ExternalFetchError%'
+and message LIKE '%ExternalFetchError%'
 ORDER BY timestamp DESC
 
-Example for "campaign delivery errors":
+For other ERROR queries:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
-from {database_name}.campaign_execution_v3
+from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
 and campaign_uuid = 'your_campaign_uuid'
 and user_uuid = 'your_user_uuid'
 and log_level = 'ERROR'
-and message LIKE '%delivery%'
-OR message LIKE '%campaign%'
+and message LIKE '%[error_term]%'
 ORDER BY timestamp DESC
+
+For general troubleshooting:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'your_account_uuid'
+and campaign_uuid = 'your_campaign_uuid'
+and user_uuid = 'your_user_uuid'
+ORDER BY timestamp DESC
+
+RULES:
+- Keep it SIMPLE - no complex OR conditions
+- Use only ONE message LIKE condition
+- Always include account_uuid, campaign_uuid, user_uuid placeholders
+- Use ORDER BY timestamp DESC
+- NO file_date conditions
+- NO multiple OR clauses
 
 Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Write a single-line SQL query that directly addresses the user's question using their key terms]
+[Simple query with one message filter]
 
 INSIGHT_EXPLANATION:
-[Explain specifically what this query will help diagnose about their question]"""
+[Brief explanation of what this query will show]"""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',

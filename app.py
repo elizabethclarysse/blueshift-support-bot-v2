@@ -62,18 +62,26 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift expert. Provide comprehensive, detailed answers for support queries.
+        prompt = f"""You are a Blueshift expert with deep knowledge of the Blueshift CDP platform. Provide comprehensive, detailed answers for support queries about Blueshift's actual features and interface.
 
-{query}
+Query: {query}
+
+IMPORTANT: Only provide information about actual Blueshift platform features and interfaces. Do not invent UI paths, menu options, or configuration settings that don't exist in Blueshift.
+
+For custom attributes in Blueshift, the correct process involves:
+- Using the Blueshift API to create custom user attributes
+- Configuring attribute mappings through data imports
+- Setting up custom attributes through SDK implementations
+- Using the Blueshift dashboard's actual navigation structure
 
 Provide a thorough, professional response with:
-1. Clear explanation of the issue/topic
-2. Step-by-step solution when applicable
-3. Code examples or configuration details when relevant
-4. Best practices and recommendations
-5. Related features or considerations
+1. Clear explanation of the issue/topic specific to Blueshift
+2. Accurate step-by-step solution using actual Blueshift features
+3. Code examples or API documentation when relevant
+4. Best practices specific to Blueshift implementation
+5. Related Blueshift features or considerations
 
-Be specific, actionable, and helpful."""
+Be specific, actionable, and accurate to actual Blueshift functionality."""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -356,7 +364,15 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
             title = r.get("title") or "Untitled"
             if not page_id:
                 continue
-            page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+            # Try multiple URL formats for Confluence page access
+            page_url_options = [
+                f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}",
+                f"{CONFLUENCE_URL}/display/~{page_id}",
+                f"{CONFLUENCE_URL}/pages/{page_id}",
+                f"https://blueshift.atlassian.net/wiki/spaces/~{page_id}"
+            ]
+            # Use the first format (most common)
+            page_url = page_url_options[0]
             formatted.append({"title": title, "url": page_url})
 
         logger.info(f"Confluence search found {len(formatted)} results")

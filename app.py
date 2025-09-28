@@ -62,14 +62,25 @@ def call_anthropic_api(query, platform_resources=None):
             'anthropic-version': '2023-06-01'
         }
 
-        # Add platform resources context if available
+        # Add platform resources context if available - use content when available
         platform_context = ""
         if platform_resources and len(platform_resources) > 0:
-            platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION:\n"
-            for i, resource in enumerate(platform_resources[:3]):  # Limit to top 3 most relevant
-                platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
+            # Check if we have resources with actual content
+            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r]
 
-        prompt = f"""You are a Blueshift Support agent helping to troubleshoot customer issues.
+            if resources_with_content:
+                platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION (FULL CONTENT):\n"
+                for i, resource in enumerate(resources_with_content[:2]):  # Top 2 with content
+                    platform_context += f"{i+1}. {resource['title']}\n"
+                    platform_context += f"   URL: {resource['url']}\n"
+                    platform_context += f"   CONTENT:\n{resource['content']}\n\n"
+            else:
+                # Fallback to just URLs
+                platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION:\n"
+                for i, resource in enumerate(platform_resources[:3]):
+                    platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
+
+        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
 
 INTERNAL SUPPORT QUERY: {query}
 
@@ -81,18 +92,23 @@ RESPONSE REQUIREMENTS:
 STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
 ## STEP-BY-STEP PLATFORM INSTRUCTIONS
-First, provide detailed step-by-step instructions for how to complete the requested task or configuration in the Blueshift platform. Use the relevant platform documentation above to ensure accuracy. Be very specific about:
-- Which menu/section to navigate to in the platform
-- Exact button names and field labels
-- Required settings and configurations
-- Screenshots references if applicable
-- Prerequisites or permissions needed
+First, provide detailed step-by-step instructions for how to complete the requested task or configuration in the Blueshift platform.
+
+CRITICAL: Use the FULL CONTENT from the platform documentation provided above - this contains the exact steps, button names, and field labels. Do NOT make up steps or guess - extract the precise instructions from the documentation content provided.
+
+Be very specific about:
+- Which menu/section to navigate to in the platform (from the documentation)
+- Exact button names and field labels (from the documentation)
+- Required settings and configurations (from the documentation)
+- Prerequisites or permissions needed (from the documentation)
 - Reference the relevant help docs URLs for additional details
+
+If the documentation content is incomplete or doesn't cover the specific query, state this clearly and provide what information is available.
 
 ## TROUBLESHOOTING GUIDANCE
 Then provide technical troubleshooting information:
 
-1. INTERNAL PERSPECTIVE: You are helping Blueshift support engineers, not customers. Never say "contact Blueshift support" - WE ARE the support team.
+1. INTERNAL PERSPECTIVE: You are helping Blueshift support agents, not customers. Never say "contact Blueshift support" - WE ARE the support team.
 
 2. TECHNICAL TROUBLESHOOTING FOCUS:
    - Provide specific debugging steps
@@ -428,7 +444,7 @@ def search_confluence_docs(query, limit=5, space_key=None, debug=True):
         return []
 
 def search_zendesk_tickets(query, limit=5):
-    """Search Zendesk tickets using API with improved error handling"""
+    """Search Zendesk tickets using API with improved error handling and recent date filtering"""
     try:
         if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN:
             logger.warning("Zendesk credentials not configured - using fallback")
@@ -448,13 +464,19 @@ def search_zendesk_tickets(query, limit=5):
                 'Accept': 'application/json'
             }
 
+        # Calculate date for past 2 years
+        from datetime import datetime, timedelta
+        two_years_ago = datetime.now() - timedelta(days=730)
+        date_filter = two_years_ago.strftime('%Y-%m-%d')
+
         # Search API endpoint
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
 
+        # Add date filtering to get recent tickets from past 2 years
         response = requests.get(url, headers=headers, params={
-            'query': f'({query}) type:ticket',
+            'query': f'({query}) type:ticket created>={date_filter}',
             'per_page': limit,
-            'sort_by': 'relevance',
+            'sort_by': 'updated_at',
             'sort_order': 'desc'
         }, timeout=15)
 
@@ -528,18 +550,18 @@ def search_help_docs(query, limit=3):
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # Enhanced curated list fallback with better matching for external fetch issues
+    # Updated curated list with actual working URLs
     help_docs_expanded = [
-        {"title": "API Integration Guide", "url": "https://help.blueshift.com/hc/en-us/articles/115002714053", "keywords": ["api", "integration", "developer", "external", "fetch", "webhook", "endpoint"]},
-        {"title": "Common API Implementation Issues", "url": "https://help.blueshift.com/hc/en-us/articles/115002713773", "keywords": ["issues", "problems", "troubleshoot", "failing", "error", "api", "external", "fetch", "timeout", "connection"]},
-        {"title": "Event Tracking API Documentation", "url": "https://help.blueshift.com/hc/en-us/articles/115002713453", "keywords": ["event", "tracking", "data", "api", "external", "fetch", "post", "send"]},
-        {"title": "Custom API Endpoints", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173", "keywords": ["custom", "api", "endpoint", "external", "integration", "fetch", "data"]},
-        {"title": "External Data Integration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253", "keywords": ["external", "data", "integration", "fetch", "import", "sync", "api"]},
-        {"title": "Webhook Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333", "keywords": ["webhook", "external", "fetch", "callback", "api", "endpoint", "configuration"]},
-        {"title": "Data Import Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/115002714413", "keywords": ["data", "import", "troubleshoot", "external", "fetch", "sync", "error", "failing"]},
-        {"title": "Authentication and API Keys", "url": "https://help.blueshift.com/hc/en-us/articles/115002714493", "keywords": ["authentication", "api", "key", "token", "external", "access", "security"]},
-        {"title": "Error Handling Best Practices", "url": "https://help.blueshift.com/hc/en-us/articles/115002714653", "keywords": ["error", "handling", "best", "practices", "api", "external", "fetch", "retry", "timeout"]},
-        {"title": "Real-time Data Processing", "url": "https://help.blueshift.com/hc/en-us/articles/115002714573", "keywords": ["realtime", "data", "processing", "external", "fetch", "stream", "api"]}
+        {"title": "Blueshift Implementation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894-Blueshift-implementation-overview", "keywords": ["implementation", "setup", "getting", "started", "platform", "overview", "configuration"]},
+        {"title": "Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283-Blueshift-s-Intelligent-Customer-Engagement-Platform", "keywords": ["platform", "customer", "engagement", "features", "overview", "capabilities"]},
+        {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups"]},
+        {"title": "Campaign Creation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199431-Creating-campaigns", "keywords": ["campaign", "email", "create", "setup", "marketing", "messaging"]},
+        {"title": "Journey Builder Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199491-Journey-Builder", "keywords": ["journey", "automation", "workflow", "trigger", "customer", "path"]},
+        {"title": "Event Tracking Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199351-Event-tracking", "keywords": ["event", "tracking", "data", "analytics", "customer", "behavior"]},
+        {"title": "Integration Setup Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199311-Integration-setup", "keywords": ["integration", "api", "setup", "data", "sync", "external"]},
+        {"title": "SDK Implementation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199371-SDK-implementation", "keywords": ["sdk", "mobile", "implementation", "android", "ios", "developer"]},
+        {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199411-Email-campaigns", "keywords": ["email", "campaign", "setup", "template", "design", "send"]},
+        {"title": "Push Notification Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199451-Push-notifications", "keywords": ["push", "notification", "mobile", "setup", "messaging", "alert"]}
     ]
 
     query_lower = query.lower()
@@ -642,37 +664,85 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
-def fetch_help_doc_content(url, max_content_length=2000):
+def fetch_help_doc_content(url, max_content_length=3000):
     """Fetch actual content from help documentation URLs to extract step-by-step instructions"""
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
-            # Basic content extraction - would need more sophisticated parsing for production
-            content = response.text
-            # Extract text content and limit length for AI processing
-            if len(content) > max_content_length:
-                content = content[:max_content_length] + "..."
-            return content
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Remove scripts, styles, and navigation
+            for tag in soup(['script', 'style', 'nav', 'header', 'footer']):
+                tag.decompose()
+
+            # Extract main content - try common content containers
+            content_selectors = [
+                'article', '.article-body', '.content', '.main-content',
+                '.help-center-article', '.article-content', 'main'
+            ]
+
+            main_content = None
+            for selector in content_selectors:
+                main_content = soup.select_one(selector)
+                if main_content:
+                    break
+
+            if not main_content:
+                main_content = soup.body if soup.body else soup
+
+            # Extract text and preserve structure
+            text_content = main_content.get_text(separator='\n', strip=True)
+
+            # Clean up excessive whitespace
+            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+            clean_content = '\n'.join(lines)
+
+            # Limit length for AI processing
+            if len(clean_content) > max_content_length:
+                clean_content = clean_content[:max_content_length] + "...\n[Content truncated for length]"
+
+            return clean_content
         return ""
     except Exception as e:
         logger.error(f"Error fetching help doc content from {url}: {e}")
         return ""
 
 def generate_related_resources(query):
-    """Generate contextually relevant resources using API searches with smart fallbacks"""
+    """Generate contextually relevant resources using API searches with smart fallbacks and content fetching"""
     logger.info(f"Searching for resources: {query}")
 
     # Perform API searches with proper error handling
-    help_docs = search_help_docs(query, limit=5)  # Get more help docs for better platform instructions
+    help_docs = search_help_docs(query, limit=3)  # Limit to top 3 to fetch content
     confluence_docs = search_confluence_docs(query, limit=3)
     jira_tickets = search_jira_tickets(query, limit=3)
     support_tickets = search_zendesk_tickets(query, limit=3)
-    api_docs = search_blueshift_api_docs(query, limit=5)  # Get more API docs
+    api_docs = search_blueshift_api_docs(query, limit=2)  # Limit to top 2 for content fetching
 
     logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
 
-    # For step-by-step instructions, we prioritize help docs and API docs
-    platform_resources = help_docs + api_docs
+    # Fetch actual content from top help docs for accurate step-by-step instructions
+    help_docs_with_content = []
+    for doc in help_docs:
+        content = fetch_help_doc_content(doc['url'])
+        help_docs_with_content.append({
+            'title': doc['title'],
+            'url': doc['url'],
+            'content': content[:2000] if content else "Content not available"  # Limit content length
+        })
+
+    # Fetch content from API docs too
+    api_docs_with_content = []
+    for doc in api_docs:
+        content = fetch_help_doc_content(doc['url'])
+        api_docs_with_content.append({
+            'title': doc['title'],
+            'url': doc['url'],
+            'content': content[:2000] if content else "Content not available"
+        })
+
+    # For step-by-step instructions, we prioritize help docs and API docs with content
+    platform_resources_with_content = help_docs_with_content + api_docs_with_content
 
     return {
         'help_docs': help_docs,
@@ -680,7 +750,8 @@ def generate_related_resources(query):
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets,
         'api_docs': api_docs,
-        'platform_resources': platform_resources  # Combined for AI processing
+        'platform_resources': help_docs + api_docs,  # Original format for links
+        'platform_resources_with_content': platform_resources_with_content  # With actual content for AI
     }
 
 def get_athena_client():
@@ -1036,8 +1107,13 @@ def handle_query():
         # Generate AI-powered relevant resources first
         related_resources = generate_related_resources(query)
 
-        # Call Anthropic API for high-quality response with platform resources context
-        ai_response = call_anthropic_api(query, related_resources.get('platform_resources', []))
+        # Call Anthropic API for high-quality response with platform resources content
+        platform_resources_with_content = related_resources.get('platform_resources_with_content', [])
+        if not platform_resources_with_content:
+            # Fallback to resources without content
+            platform_resources_with_content = related_resources.get('platform_resources', [])
+
+        ai_response = call_anthropic_api(query, platform_resources_with_content)
 
         # Generate Athena insights
         athena_insights = generate_athena_insights(query)

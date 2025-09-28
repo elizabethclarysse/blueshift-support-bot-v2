@@ -157,14 +157,13 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content
-        # FIX: The temperature is set to 0.3 for the general query to reduce brittleness.
+        # FIX: Temperature set to 0.3 for the general query to reduce brittleness/conversational stops.
         if temperature > 0.0:
-             # Only adjust temperature if it's not the fixed Athena SQL generation call (temp=0.0)
             temp = 0.3
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift support agent troubleshooting customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -209,7 +208,7 @@ When this feature isn't working as expected:
 """
 
         # FIX: Ensure the prompt explicitly tells the model to start the structured response
-        start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below."
+        start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below. Do NOT use conversational filler like 'Of course, here is...'"
         full_prompt = system_instruction_content + "\n\n" + start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
 
         contents_array = [
@@ -314,6 +313,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
                     else:
                         logger.info(f"JIRA query #{i+1} returned no results")
                 else:
+                    # Log the failed JIRA endpoint search error
                     logger.error(f"JIRA API error on query #{i+1} (GET): {response.status_code} - {response.text[:200]}")
 
             except Exception as e:
@@ -359,7 +359,8 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
 # --- FIX: Confluence Search - Bypassed Validation for Raw Results ---
 def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
     """
-    FIXED: Confluence search logic, returns raw results without filtering, relying on generic validation.
+    FIXED: Confluence search logic. Since validation is too aggressive, we remove 
+    the result validation step from this function, relying on the central validation only.
     """
     try:
         if not API_STATUS.get('confluence', False):
@@ -417,7 +418,11 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             main_word = max(clean_query_words, key=len)
             cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
 
-        # --- Try queries in order, with score quality check ---
+        # Add space filter if provided
+        if space_key:
+            cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
+
+        # --- Try queries in order ---
         final_results = []
         for i, cql in enumerate(cql_variants):
             try:
@@ -467,11 +472,9 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             formatted.append({"title": title, "url": page_url})
 
         logger.info(f"Confluence search found {len(formatted)} results")
+        
+        # CRITICAL FIX: We are now relying solely on validate_search_results_improved in generate_related_resources_improved
         return formatted
-
-    except Exception as e:
-        logger.error(f"Confluence search error: {e}", exc_info=True)
-        return []
 # --- END FIX ---
 
 
@@ -813,6 +816,8 @@ def generate_related_resources_improved(query):
     # We apply validation manually on the Confluence raw results for troubleshooting,
     # then include them all if they were found (to debug the Confluence validation step)
     confluence_raw = search_confluence_docs_improved(query, limit=4)
+    # FIX: Confluence validation is now run, but because the base filter is so strict, 
+    # we rely on it now being correctly filtered.
     confluence_docs = validate_search_results_improved(query, confluence_raw, "Confluence")
 
     jira_tickets = validate_search_results_improved(query, search_jira_tickets_improved(query, limit=4), "JIRA")
@@ -1013,9 +1018,10 @@ def generate_athena_insights(user_query):
         # Get available tables first
         database_name = ATHENA_DATABASES[0]  # Use first database
         available_tables = get_available_tables(database_name)
-        table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3"
+        table_list = ', '.join(available_tables[:20]) if available_tables else "customer_campaign_logs.campaign_execution_v3"
 
         # --- Use the new call_gemini_api for analysis ---
+        # FIX: Explicitly enforce the full table name in the template examples.
         analysis_prompt = f"""Generate a simple Athena SQL query for this Blueshift support question: "{user_query}"
 
 Available database: {database_name}
@@ -1027,8 +1033,6 @@ For EXTERNAL FETCH errors:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
-and campaign_uuid = 'your_campaign_uuid'
-and user_uuid = 'your_user_uuid'
 and log_level = 'ERROR'
 and message LIKE '%ExternalFetchError%'
 ORDER BY timestamp DESC
@@ -1037,8 +1041,6 @@ For other ERROR queries:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
-and campaign_uuid = 'your_campaign_uuid'
-and user_uuid = 'your_user_uuid'
 and log_level = 'ERROR'
 and message LIKE '%[error_term]%'
 ORDER BY timestamp DESC
@@ -1047,14 +1049,12 @@ For general troubleshooting:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
-and campaign_uuid = 'your_campaign_uuid'
-and user_uuid = 'your_user_uuid'
 ORDER BY timestamp DESC
 
 RULES:
 - Keep it SIMPLE - no complex OR conditions
 - Use only ONE message LIKE condition
-- Always include account_uuid, campaign_uuid, user_uuid placeholders
+- Always include account_uuid placeholder ('your_account_uuid')
 - Use ORDER BY timestamp DESC
 - You MUST use the FULL table name: customer_campaign_logs.campaign_execution_v3
 - NO file_date conditions
@@ -1828,166 +1828,4 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div class="feature">
-                <h3>🎯 Zendesk</h3>
-                <ul>
-                    <li>Customer support ticket analysis</li>
-                    <li>Similar issue resolutions</li>
-                    <li>Support team responses</li>
-                    <li>Escalation procedures</li>
-                </ul>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        document.getElementById('searchBtn').addEventListener('click', function() {
-            const query = document.getElementById('queryInput').value.trim();
-            if (!query) {
-                alert('Please enter a question first');
-                return;
-            }
-
-            // Show loading
-            document.getElementById('searchBtn').innerHTML = '<span class="loading"></span> Analyzing...';
-            document.getElementById('searchBtn').disabled = true;
-
-            fetch('/query', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ query: query })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-
-                // Show response
-                document.getElementById('responseContent').textContent = data.response;
-                const resultsContainer = document.getElementById('resultsContainer');
-                resultsContainer.style.display = 'block';
-                resultsContainer.classList.add('show');
-
-                // Show resources in 4-column grid
-                showResources(data.resources);
-
-                // Show Athena insights if available
-                if (data.athena_insights) {
-                    showAthenaInsights(data.athena_insights);
-                }
-
-                // Reset button
-                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
-                document.getElementById('searchBtn').disabled = false;
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
-                document.getElementById('searchBtn').disabled = false;
-            });
-        });
-
-        document.getElementById('followupBtn').addEventListener('click', function() {
-            const followupQuery = document.getElementById('followupInput').value.trim();
-            if (!followupQuery) {
-                alert('Please enter a follow-up question');
-                return;
-            }
-
-            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
-            document.getElementById('followupBtn').disabled = true;
-
-            fetch('/followup', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ query: followupQuery })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-
-                document.getElementById('followupResponse').textContent = data.response;
-                document.getElementById('followupResponse').style.display = 'block';
-                document.getElementById('followupInput').value = '';
-
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
-            });
-        });
-
-        function showResources(resources) {
-            const sourcesGrid = document.getElementById('sourcesGrid');
-            sourcesGrid.innerHTML = '';
-
-            const categories = [
-                { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
-                { key: 'help_docs', title: '📚 Help Docs & APIs', icon: '📚' },
-                { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
-                { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
-            ];
-
-            categories.forEach(category => {
-                const categoryDiv = document.createElement('div');
-                categoryDiv.className = 'source-category';
-                categoryDiv.innerHTML = `<h4>${category.title}</h4>`;
-
-                // For Help Docs, combine both help_docs and api_docs
-                let items = [];
-                if (category.key === 'help_docs') {
-                    items = [...(resources['help_docs'] || []), ...(resources['api_docs'] || [])];
-                } else {
-                    items = resources[category.key] || [];
-                }
-
-                items.forEach(item => {
-                    const itemDiv = document.createElement('div');
-                    itemDiv.className = 'source-item';
-                    itemDiv.innerHTML = `<a href="${item.url}" target="_blank">${item.title}</a>`;
-                    categoryDiv.appendChild(itemDiv);
-                });
-
-                sourcesGrid.appendChild(categoryDiv);
-            });
-        }
-
-        // Allow Enter key to trigger search
-        document.getElementById('queryInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                document.getElementById('searchBtn').click();
-            }
-        });
-
-        document.getElementById('followupInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                document.getElementById('followupBtn').click();
-            }
-        });
-
-        function showAthenaInsights(athenaData) {
-            // Show the Athena section
-            document.getElementById('athenaSection').style.display = 'block';
-
-            // Set database
-            document.getElementById('athenaDatabase').textContent = athenaData.database || 'default';
-
-            // Set explanation
-            document.getElementById('athenaExplanation').textContent = athenaData.explanation;
-
-            // Set editable SQL query
-            document.getElementById('suggestedQuery').value = athenaData.sql_query;
-
-        }
-
-    </script>
-</body>
-</html>
-'''
+                <h3>🎯 Zendesk

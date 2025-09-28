@@ -54,7 +54,7 @@ logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
 logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
 def call_anthropic_api(query, platform_resources=None):
-    """Call Anthropic Claude API for high-quality responses with platform resource context"""
+    """Call Anthropic Claude API with improved prompt for accuracy"""
     try:
         headers = {
             'x-api-key': AI_API_KEY,
@@ -62,123 +62,56 @@ def call_anthropic_api(query, platform_resources=None):
             'anthropic-version': '2023-06-01'
         }
 
-        # Add platform resources context if available - use content when available
+        # Build context from actual retrieved content
         platform_context = ""
         if platform_resources and len(platform_resources) > 0:
-            # Check if we have resources with actual content
-            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r]
+            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and r.get('content', '').strip()]
 
             if resources_with_content:
-                platform_context = "\n\nCOMPREHENSIVE PLATFORM DOCUMENTATION (FULL CONTENT FROM ALL SOURCES):\n"
-                for i, resource in enumerate(resources_with_content[:4]):  # Top 4 with content from all sources
-                    platform_context += f"{i+1}. [{resource.get('source', 'unknown').upper()}] {resource['title']}\n"
-                    platform_context += f"   URL: {resource['url']}\n"
-                    platform_context += f"   DETAILED CONTENT:\n{resource['content']}\n"
-                    platform_context += "   " + "="*50 + "\n\n"
+                platform_context = "\n\nDOCUMENTATION CONTENT FROM SEARCH RESULTS:\n"
+                for i, resource in enumerate(resources_with_content[:4]):
+                    platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
+                    platform_context += f"URL: {resource['url']}\n"
+                    platform_context += f"CONTENT:\n{resource['content'][:2000]}\n"  # Limit content length
+                    platform_context += "="*50 + "\n"
             else:
-                # Fallback to just URLs
-                platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION:\n"
+                platform_context = "\n\nRELEVANT RESOURCES FOUND (URLs only):\n"
                 for i, resource in enumerate(platform_resources[:3]):
-                    platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
+                    platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
+        # IMPROVED PROMPT - Focus on accuracy over fabrication
+        prompt = f"""You are a Blueshift support agent helping troubleshoot client issues.
 
-INTERNAL SUPPORT QUERY: {query}
-
-CONTEXT: This is an internal tool used BY Blueshift support staff to troubleshoot customer tickets, not customer-facing.
+SUPPORT QUERY: {query}
 {platform_context}
 
-RESPONSE REQUIREMENTS:
+CRITICAL INSTRUCTIONS FOR ACCURACY:
+1. ONLY provide step-by-step instructions if they are EXPLICITLY found in the documentation content above
+2. If no specific steps are found, say so honestly and provide general troubleshooting guidance
+3. Do NOT fabricate or guess at platform navigation steps
+4. Use EXACT terminology from the documentation when available
+5. If content is incomplete or unclear, acknowledge this limitation
 
-STRUCTURE YOUR RESPONSE AS FOLLOWS:
+RESPONSE FORMAT:
 
-## STEP-BY-STEP PLATFORM INSTRUCTIONS
+## Platform Navigation Steps
+[Only include if ACTUALLY found in documentation above]
+[If found, format as numbered list with exact terminology from docs]
+[If NOT found, write: "Specific platform navigation steps were not found in the available documentation."]
 
-MANDATORY REQUIREMENT: You have access to content from MULTIPLE sources - Help Docs, API Docs, Confluence, JIRA tickets, and Zendesk tickets. You MUST check ALL sources for platform navigation steps.
+## Troubleshooting Guidance
+Provide technical troubleshooting based on Blueshift platform knowledge:
+- Common causes of this issue
+- What to check in logs/databases
+- Relevant Athena queries to investigate
+- API endpoints or system components to examine
 
-SEARCH ALL DOCUMENTATION SOURCES FOR:
-1. **HELP DOCS**: Look for articles like "Campaign Studio", "Journey Tab", "Detail Mode", "Trigger Actions"
-2. **CONFLUENCE**: Internal documentation with detailed platform workflows
-3. **JIRA TICKETS**: Engineering tickets that mention platform navigation and UI elements
-4. **ZENDESK TICKETS**: Support tickets where agents provided platform navigation steps to customers
-5. **API DOCS**: Developer documentation with platform integration steps
+## Internal Notes
+- Database: customer_campaign_logs.campaign_execution_v3 for error analysis
+- API Base: https://api.getblueshift.com
+- Common error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
 
-CRITICAL INSTRUCTIONS:
-1. READ through ALL documentation content from ALL sources provided above
-2. Look for phrases like "Go to", "Click", "Navigate to", "Select", "Choose", "Access via"
-3. Find UI elements like "Journey Tab", "Detail Mode", "Filter Conditions", "Campaign Studio"
-4. Extract and format these as numbered step-by-step instructions
-5. Use EXACT terminology from ANY of the documentation sources
-6. Combine information from multiple sources if needed for complete steps
-
-FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
-**Steps to check trigger filter conditions (if trigger not sending):**
-
-1. Navigate to Campaign Studio → Journey Tab
-2. Switch to "Detail Mode" to view full trigger configurations
-3. Check filter criteria and delay parameters for the specific trigger
-4. [Continue with all steps found across ALL documentation sources]
-
-**What to check specifically:**
-- [List specific things to verify from documentation]
-- [Include exact field names and settings from docs]
-
-**Prerequisites:** [Any requirements mentioned in documentation]
-**Reference:** [List ALL sources that contained these steps - Help Docs, Confluence, JIRA, Zendesk]
-
-EXAMPLE OF EXPECTED RESPONSE:
-Based on the Campaign Studio help documentation and internal Confluence workflows:
-
-**Steps to check trigger filter conditions:**
-1. Navigate to Campaign Studio → Journey Tab
-2. Switch to "Detail Mode" to see full trigger configurations
-3. Click on the specific trigger that's not sending
-4. Review filter criteria (shown in green)
-5. Check delay parameters (shown in yellow)
-6. Verify message settings (shown in blue)
-
-**Reference:** Campaign Studio help doc, Confluence workflow guide, JIRA ticket BS-1234
-
-IF documentation lacks specific platform steps, provide what's available and state which sources were checked.
-
-## TROUBLESHOOTING GUIDANCE
-Then provide technical troubleshooting information:
-
-1. INTERNAL PERSPECTIVE: You are helping Blueshift support engineers, not customers. Never say "contact Blueshift support" - WE ARE the support team.
-
-2. TECHNICAL TROUBLESHOOTING FOCUS:
-   - Provide specific debugging steps
-   - Suggest what to check in logs/databases
-   - Recommend specific Athena queries to investigate
-   - Point to relevant system components or error patterns
-
-3. BLUESHIFT PLATFORM KNOWLEDGE:
-   - API Base URL: https://api.getblueshift.com
-   - Events API: POST https://api.getblueshift.com/api/v1/event
-   - Customer API: POST https://api.getblueshift.com/api/v1/customers
-   - Main troubleshooting database: customer_campaign_logs.campaign_execution_v3
-   - Common error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
-
-4. INTERNAL TROUBLESHOOTING RESPONSES:
-   - "Check the campaign_execution_v3 logs for..."
-   - "Look for specific error patterns in Athena..."
-   - "This typically indicates..."
-   - "To investigate further, query..."
-   - "Common causes include..."
-
-5. API EXAMPLES (when relevant):
-     curl --request POST \\
-          --url https://api.getblueshift.com/api/v1/customers \\
-          --header 'accept: application/json' \\
-          --header 'content-type: application/json' \\
-          --data '{{
-       "email": "user@example.com",
-       "custom_attribute": "value"
-     }}'
-
-IMPORTANT: Always start with the step-by-step platform instructions, then follow with troubleshooting guidance. Be extremely specific about UI navigation and button names in the platform instructions section.
-
-NEVER suggest contacting Blueshift support - provide direct troubleshooting guidance for internal support engineers."""
+Remember: Be honest about what information is available vs. what you're inferring from general knowledge."""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -700,123 +633,219 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
-def fetch_help_doc_content(url, max_content_length=3000):
-    """Fetch actual content from help documentation URLs to extract step-by-step instructions"""
+def fetch_help_doc_content(url, max_content_length=4000):
+    """Improved content fetching focused on extracting actual instructions"""
     try:
-        response = requests.get(url, timeout=15)
-        if response.status_code == 200:
+        logger.info(f"Fetching content from: {url}")
+
+        # Add headers to avoid blocking
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        response = requests.get(url, timeout=15, headers=headers)
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch {url}: Status {response.status_code}")
+            return ""
+
+        try:
             from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
+        except ImportError:
+            logger.error("BeautifulSoup not installed. Install with: pip install beautifulsoup4")
+            return ""
 
-            # Remove scripts, styles, and navigation
-            for tag in soup(['script', 'style', 'nav', 'header', 'footer']):
-                tag.decompose()
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Extract main content - try common content containers
-            content_selectors = [
-                'article', '.article-body', '.content', '.main-content',
-                '.help-center-article', '.article-content', 'main'
-            ]
+        # Remove unwanted elements
+        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form']):
+            tag.decompose()
 
-            main_content = None
-            for selector in content_selectors:
-                main_content = soup.select_one(selector)
-                if main_content:
-                    break
+        # Try multiple content selectors in order of preference
+        content_selectors = [
+            'article .article-body',  # Zendesk help center
+            '.article-content',
+            '.help-center-article',
+            'article',
+            '.content',
+            '.main-content',
+            'main .body',
+            '.post-content',
+            '#content',
+            '.entry-content'
+        ]
 
-            if not main_content:
-                main_content = soup.body if soup.body else soup
+        main_content = None
+        for selector in content_selectors:
+            main_content = soup.select_one(selector)
+            if main_content:
+                logger.info(f"Found content using selector: {selector}")
+                break
 
-            # Extract text and preserve structure
-            text_content = main_content.get_text(separator='\n', strip=True)
+        if not main_content:
+            # Fallback to body
+            main_content = soup.body if soup.body else soup
+            logger.info("Using fallback body content")
 
-            # Clean up excessive whitespace
-            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-            clean_content = '\n'.join(lines)
+        # Extract text while preserving some structure
+        # Look for step-by-step content specifically
+        step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open', 'choose']
 
-            # Limit length for AI processing
-            if len(clean_content) > max_content_length:
-                clean_content = clean_content[:max_content_length] + "...\n[Content truncated for length]"
+        text_content = ""
+        for element in main_content.find_all(['p', 'li', 'div', 'h1', 'h2', 'h3', 'h4']):
+            text = element.get_text(strip=True)
+            if text and len(text) > 10:  # Ignore very short text
+                # Prioritize content that looks like instructions
+                if any(indicator in text.lower() for indicator in step_indicators):
+                    text_content += f"\n[INSTRUCTION] {text}\n"
+                else:
+                    text_content += f"{text}\n"
 
-            return clean_content
-        return ""
+        # Clean up and limit length
+        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+        clean_content = '\n'.join(lines)
+
+        if len(clean_content) > max_content_length:
+            clean_content = clean_content[:max_content_length] + "\n...[Content truncated]"
+
+        logger.info(f"Extracted {len(clean_content)} characters from {url}")
+        return clean_content
+
     except Exception as e:
-        logger.error(f"Error fetching help doc content from {url}: {e}")
+        logger.error(f"Error fetching content from {url}: {e}")
         return ""
+
+def validate_search_results(query, results, source_name):
+    """Validate that search results are actually relevant to the query"""
+    if not results:
+        return []
+
+    query_words = set(query.lower().split())
+    validated_results = []
+
+    for result in results:
+        title = result.get('title', '').lower()
+        url = result.get('url', '')
+
+        # Check if result has reasonable relevance
+        title_words = set(title.split())
+        common_words = query_words.intersection(title_words)
+
+        # Require at least some word overlap or specific Blueshift terms
+        blueshift_terms = {'campaign', 'trigger', 'blueshift', 'api', 'event', 'customer'}
+        has_blueshift_terms = any(term in title for term in blueshift_terms)
+
+        if len(common_words) > 0 or has_blueshift_terms:
+            validated_results.append(result)
+            logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')}")
+        else:
+            logger.info(f"❌ {source_name} result rejected (low relevance): {result.get('title', 'Untitled')}")
+
+    return validated_results
+
+def verify_step_extraction(query, resources_with_content):
+    """Verify if actual step-by-step instructions exist in the content"""
+    step_indicators = [
+        'step 1', 'step 2', '1.', '2.', '3.',
+        'navigate to', 'click on', 'go to', 'select',
+        'open', 'choose', 'access', 'find'
+    ]
+
+    found_steps = []
+    for resource in resources_with_content:
+        content = resource.get('content', '').lower()
+
+        for indicator in step_indicators:
+            if indicator in content:
+                # Extract the sentence containing the step
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if indicator in sentence:
+                        found_steps.append({
+                            'source': resource['title'],
+                            'step': sentence.strip()[:200]  # Limit length
+                        })
+                        break
+
+    logger.info(f"Found {len(found_steps)} potential steps in documentation")
+    return found_steps
+
+def test_content_fetching():
+    """Test content fetching with actual URLs"""
+    test_urls = [
+        "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio",
+        "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign"
+    ]
+
+    for url in test_urls:
+        print(f"\n=== Testing: {url} ===")
+        content = fetch_help_doc_content(url)
+        print(f"Content length: {len(content)}")
+        if content:
+            print(f"First 200 chars: {content[:200]}")
+            # Check for step indicators
+            step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open']
+            found = [indicator for indicator in step_indicators if indicator in content.lower()]
+            print(f"Step indicators found: {found}")
+        else:
+            print("❌ No content retrieved")
 
 def generate_related_resources(query):
-    """Generate contextually relevant resources using API searches with smart fallbacks and content fetching"""
+    """Generate resources with validation and better content extraction"""
     logger.info(f"Searching for resources: {query}")
 
-    # Perform API searches with proper error handling
-    help_docs = search_help_docs(query, limit=3)  # Limit to top 3 to fetch content
-    confluence_docs = search_confluence_docs(query, limit=3)
-    jira_tickets = search_jira_tickets(query, limit=3)
-    support_tickets = search_zendesk_tickets(query, limit=3)
-    api_docs = search_blueshift_api_docs(query, limit=2)  # Limit to top 2 for content fetching
+    # Perform searches
+    help_docs = validate_search_results(query, search_help_docs(query, limit=3), "Help Docs")
+    confluence_docs = validate_search_results(query, search_confluence_docs(query, limit=3), "Confluence")
+    jira_tickets = validate_search_results(query, search_jira_tickets(query, limit=3), "JIRA")
+    support_tickets = validate_search_results(query, search_zendesk_tickets(query, limit=3), "Zendesk")
+    api_docs = validate_search_results(query, search_blueshift_api_docs(query, limit=2), "API Docs")
 
-    logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
+    logger.info(f"Validated resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
 
-    # Fetch actual content from ALL resources for comprehensive step-by-step instructions
-    help_docs_with_content = []
-    for doc in help_docs:
+    # Fetch content only from high-value sources
+    resources_with_content = []
+
+    # Prioritize help docs and API docs for content fetching
+    for doc in help_docs[:2]:  # Top 2 help docs
         content = fetch_help_doc_content(doc['url'])
-        if content and len(content.strip()) > 50:  # Only include if substantial content
-            help_docs_with_content.append({
+        if content and len(content.strip()) > 100:  # Require substantial content
+            resources_with_content.append({
                 'title': doc['title'],
                 'url': doc['url'],
-                'content': content[:3000],  # More content for better instructions
+                'content': content,
                 'source': 'help_docs'
             })
+            logger.info(f"✅ Successfully fetched help doc content: {doc['title']}")
 
-    # Fetch content from API docs too
-    api_docs_with_content = []
-    for doc in api_docs:
+    for doc in api_docs[:2]:  # Top 2 API docs
         content = fetch_help_doc_content(doc['url'])
-        if content and len(content.strip()) > 50:
-            api_docs_with_content.append({
+        if content and len(content.strip()) > 100:
+            resources_with_content.append({
                 'title': doc['title'],
                 'url': doc['url'],
-                'content': content[:3000],
+                'content': content,
                 'source': 'api_docs'
             })
+            logger.info(f"✅ Successfully fetched API doc content: {doc['title']}")
 
-    # Include Confluence docs with content if available
-    confluence_docs_with_content = []
-    for doc in confluence_docs:
-        if doc.get('url'):
-            content = fetch_help_doc_content(doc['url'])
-            if content and len(content.strip()) > 50:
-                confluence_docs_with_content.append({
-                    'title': doc['title'],
-                    'url': doc['url'],
-                    'content': content[:3000],
-                    'source': 'confluence'
-                })
+    # Add ticket summaries for context (without full content to save tokens)
+    for ticket in jira_tickets[:2]:
+        resources_with_content.append({
+            'title': ticket['title'],
+            'url': ticket['url'],
+            'content': f"JIRA Ticket Reference: {ticket['title']} - Check this ticket for technical details.",
+            'source': 'jira'
+        })
 
-    # Combine ALL resources with content for comprehensive AI analysis
-    platform_resources_with_content = help_docs_with_content + api_docs_with_content + confluence_docs_with_content
+    for ticket in support_tickets[:2]:
+        resources_with_content.append({
+            'title': ticket['title'],
+            'url': ticket['url'],
+            'content': f"Support Ticket Reference: {ticket['title']} - Similar customer issue.",
+            'source': 'zendesk'
+        })
 
-    logger.info(f"Content-rich resources: help_docs={len(help_docs_with_content)}, api_docs={len(api_docs_with_content)}, confluence={len(confluence_docs_with_content)}")
-
-    # Include ticket summaries for context (without full content to save tokens)
-    if jira_tickets:
-        for ticket in jira_tickets[:2]:  # Top 2 JIRA tickets
-            platform_resources_with_content.append({
-                'title': ticket['title'],
-                'url': ticket['url'],
-                'content': f"Related JIRA ticket: {ticket['title']}",
-                'source': 'jira'
-            })
-
-    if support_tickets:
-        for ticket in support_tickets[:2]:  # Top 2 Zendesk tickets
-            platform_resources_with_content.append({
-                'title': ticket['title'],
-                'url': ticket['url'],
-                'content': f"Related support ticket: {ticket['title']}",
-                'source': 'zendesk'
-            })
+    logger.info(f"Final content-rich resources: {len(resources_with_content)}")
 
     return {
         'help_docs': help_docs,
@@ -824,8 +853,8 @@ def generate_related_resources(query):
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets,
         'api_docs': api_docs,
-        'platform_resources': help_docs + api_docs,  # Original format for links
-        'platform_resources_with_content': platform_resources_with_content  # With actual content for AI
+        'platform_resources': help_docs + api_docs,
+        'platform_resources_with_content': resources_with_content
     }
 
 def get_athena_client():
@@ -1178,15 +1207,29 @@ def handle_query():
         if not query:
             return jsonify({"error": "Please provide a query"})
 
-        # Generate AI-powered relevant resources first
+        # DEBUG: Log the query
+        logger.info(f"Processing query: {query}")
+
+        # Generate resources with validation
         related_resources = generate_related_resources(query)
 
-        # Call Anthropic API for high-quality response with platform resources content
+        # DEBUG: Log what content was actually retrieved
         platform_resources_with_content = related_resources.get('platform_resources_with_content', [])
-        if not platform_resources_with_content:
-            # Fallback to resources without content
-            platform_resources_with_content = related_resources.get('platform_resources', [])
+        logger.info(f"Retrieved {len(platform_resources_with_content)} resources with content")
 
+        # NEW: Check if any content actually contains step instructions
+        total_step_content = 0
+        for resource in platform_resources_with_content:
+            content = resource.get('content', '')
+            step_indicators = ['step', 'navigate', 'click', 'select', 'go to']
+            has_steps = any(indicator in content.lower() for indicator in step_indicators)
+            if has_steps:
+                total_step_content += 1
+            logger.info(f"- {resource['title']}: {len(content)} chars, has_steps: {has_steps}")
+
+        logger.info(f"Resources with actual step content: {total_step_content}")
+
+        # Call improved AI function
         ai_response = call_anthropic_api(query, platform_resources_with_content)
 
         # Generate Athena insights

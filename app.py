@@ -114,7 +114,7 @@ def validate_api_credentials_on_startup():
             logger.error(f"Zendesk validation exception: {e}")
     else:
         validation_results['zendesk'] = False
-        logger.error("Zendesk credentials missing")
+        logger.error("ZENDESK credentials missing")
 
     logger.info(f"🔍 API Validation Results: {validation_results}")
     return validation_results
@@ -124,12 +124,11 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-# --- REPLACEMENT FOR call_anthropic_api, WITH TIMEOUT AND MAX_TOKEN ADJUSTMENT ---
+# --- REPLACEMENT FOR call_anthropic_api, WITH AI RESPONSE FIX ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration.
     
-    FIX: The system instruction is passed as a combined prompt to avoid JSON structure errors.
-    FIX: Timeout increased to 60 seconds and maxOutputTokens reduced to 2000 for faster response.
+    FIX: Increased temperature to 0.3 for main queries to prevent early conversational stop.
     """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
@@ -157,14 +156,15 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # System Instruction content (Used as a prefix to the user prompt)
+        # System Instruction content
         # FIX: The temperature is set to 0.3 for the general query to reduce brittleness.
-        if platform_resources and platform_resources[0].get('content'):
+        if temperature > 0.0:
+             # Only adjust temperature if it's not the fixed Athena SQL generation call (temp=0.0)
             temp = 0.3
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are a Blueshift Support Agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -208,8 +208,9 @@ When this feature isn't working as expected:
 - This is internal support guidance - provide actionable troubleshooting steps
 """
 
-        # Combine system instruction and user query into a single user message part
-        full_prompt = system_instruction_content + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
+        # FIX: Ensure the prompt explicitly tells the model to start the structured response
+        start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below."
+        full_prompt = system_instruction_content + "\n\n" + start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
 
         contents_array = [
             {"role": "user", "parts": [{"text": full_prompt}]}
@@ -218,17 +219,16 @@ When this feature isn't working as expected:
         data = {
             "contents": contents_array,
             "generationConfig": { 
-                "temperature": temp, # Use the conditionally set temperature
-                "maxOutputTokens": 2000 # Reduced for performance
+                "temperature": temp, 
+                "maxOutputTokens": 2000 
             }
         }
         
         # Add API Key to the URL
         url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
 
-        # --- FIX: Timeout increased to 60 seconds ---
+        # Timeout increased to 60 seconds 
         response = requests.post(url_with_key, headers=headers, json=data, timeout=60) 
-        # --------------------------------------------
 
         if response.status_code == 200:
             response_json = response.json()
@@ -246,12 +246,9 @@ When this feature isn't working as expected:
 # --- END REPLACEMENT ---
 
 
-# --- FIX: JIRA Search - Restored robust progressive queries and loosened final filtering ---
+# --- FIX: JIRA Search - Switched to GET request for reliability ---
 def search_jira_tickets_improved(query, limit=5, debug=True):
-    """FIXED: Search JIRA tickets with robust progressive querying and loosened filtering.
-    
-    CRITICAL FIX: Corrected JIRA search URL to the modern endpoint /rest/api/3/search
-    """
+    """FIXED: Switched JIRA search from POST to GET with JQL in params for higher reliability, avoiding 410 error."""
     try:
         if not API_STATUS.get('jira', False):
             logger.warning("JIRA API not available - skipping search")
@@ -268,58 +265,43 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         headers = {
             'Authorization': f'Basic {auth}',
             'Accept': 'application/json',
-            'Content-Type': 'application/json'
         }
 
         # --- Clean query words ---
         words = query.strip().split()
         clean_query_words = clean_words(words)
 
-        # If we filtered out everything, use original words
         if not clean_query_words:
             clean_query_words = words
 
         logger.info(f"JIRA search - Original: '{query}' -> Clean words: {clean_query_words}")
 
-        # --- Build JQL queries progressively ---
+        # --- Build JQL queries progressively for GET request ---
         jql_variants = []
 
-        # 1. Exact phrase in summary (highest relevance)
+        # 1. Exact phrase (highest relevance)
         jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
 
-        # 2. Clean words AND in summary and text
-        if len(clean_query_words) > 1:
-            # Use 'text' to search description, comments, and environment
-            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
-
-        # 3. Clean words OR in summary and text (broad match)
+        # 2. Clean words OR in summary and text (most reliable for finding results)
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
-        # 4. Single most important word in summary only (fallback)
-        if len(clean_query_words) > 0:
-            main_word = max(clean_query_words, key=len)
-            jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
-
-        # --- CRITICAL FIX: Use the correct, non-deprecated search endpoint ---
-        # The endpoint should be '/rest/api/3/search' for POST requests with JQL in the body.
-        url = f"{JIRA_URL}/rest/api/3/search" 
-        # -------------------------------------------------------------------
+        url = f"{JIRA_URL}/rest/api/3/search"
 
         # --- Try queries in order ---
         final_issues = []
         for i, jql in enumerate(jql_variants):
             try:
-                logger.info(f"Trying JIRA JQL #{i+1}: {jql}")
+                logger.info(f"Trying JIRA JQL #{i+1} (GET): {jql}")
 
-                payload = {
+                params = {
                     'jql': jql,
-                    'maxResults': limit * 3,  # Get more for filtering
-                    'fields': ['summary', 'key', 'status', 'priority', 'issuetype']
+                    'maxResults': limit * 3,
+                    'fields': 'summary,key,status,priority,issuetype'
                 }
 
-                response = requests.post(url, headers=headers, json=payload, timeout=15)
+                # CRITICAL FIX: Changed from POST to GET and moved JQL to params
+                response = requests.get(url, headers=headers, params=params, timeout=15) 
 
                 if response.status_code == 200:
                     data = response.json()
@@ -332,7 +314,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
                     else:
                         logger.info(f"JIRA query #{i+1} returned no results")
                 else:
-                    logger.error(f"JIRA API error on query #{i+1}: {response.status_code} - {response.text[:200]}")
+                    logger.error(f"JIRA API error on query #{i+1} (GET): {response.status_code} - {response.text[:200]}")
 
             except Exception as e:
                 logger.error(f"JIRA query #{i+1} failed: {e}")
@@ -359,7 +341,6 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Format results ---
         results = []
         for score, issue in scored_issues[:limit]:
-            # Removed 'if score > 0' filter to allow valid low-scoring matches
             summary = issue.get('fields', {}).get('summary', 'No summary')
             key = issue.get('key', 'Unknown')
             results.append({
@@ -375,10 +356,10 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         return []
 # --- END FIX ---
 
-# --- FIX: Confluence Search - Restored robust progressive queries and adjusted scoring ---
+# --- FIX: Confluence Search - Bypassed Validation for Raw Results ---
 def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
     """
-    FIXED: Confluence search with robust progressive CQL and adjusted score handling.
+    FIXED: Confluence search logic, returns raw results without filtering, relying on generic validation.
     """
     try:
         if not API_STATUS.get('confluence', False):
@@ -436,16 +417,6 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             main_word = max(clean_query_words, key=len)
             cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
 
-        # 5. Very broad fallback - just search for any word
-        if clean_query_words:
-            # Pick the most specific word (longest) and search broadly
-            main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'text ~ "{main_word}"')
-
-        # Add space filter if provided
-        if space_key:
-            cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
-
         # --- Try queries in order, with score quality check ---
         final_results = []
         for i, cql in enumerate(cql_variants):
@@ -454,7 +425,6 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
                 results = run_search(cql)
 
                 if results:
-                    # Removed score check - trust the progressive query, validation handles filtering.
                     final_results = results
                     logger.info(f"Query #{i+1} returned {len(results)} results. Using these results.")
                     break
@@ -1049,7 +1019,7 @@ def generate_athena_insights(user_query):
         analysis_prompt = f"""Generate a simple Athena SQL query for this Blueshift support question: "{user_query}"
 
 Available database: {database_name}
-Main table: campaign_execution_v3
+Main table: customer_campaign_logs.campaign_execution_v3
 
 Based on the user's question, create a SIMPLE query following these patterns:
 
@@ -1086,6 +1056,7 @@ RULES:
 - Use only ONE message LIKE condition
 - Always include account_uuid, campaign_uuid, user_uuid placeholders
 - Use ORDER BY timestamp DESC
+- You MUST use the FULL table name: customer_campaign_logs.campaign_execution_v3
 - NO file_date conditions
 - NO multiple OR clauses
 
@@ -2020,30 +1991,3 @@ MAIN_TEMPLATE = '''
 </body>
 </html>
 '''
-
-if __name__ == '__main__':
-    print("Starting Blueshift Support Bot with AWS Athena Integration...")
-    port = int(os.environ.get('PORT', 8103))
-    print(f"Visit: http://localhost:{port}")
-    print(f"AWS Region: {AWS_REGION}")
-    print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
-    print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
-
-    # Debug: Check environment variables
-    print(f"\n=== Environment Variables Debug ===")
-    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
-    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
-    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
-    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
-    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
-    print("=" * 40)
-    
-    # Print API status results
-    print("\n=== External API Status ===")
-    for api, status in API_STATUS.items():
-        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
-    print("=" * 40)
-
-    app.run(host='0.0.0.0', port=port, debug=True)

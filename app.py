@@ -80,7 +80,7 @@ def call_anthropic_api(query, platform_resources=None):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # BALANCED PROMPT - Accurate but assertive when content is available
-        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
+        prompt = f"""You are a Blueshift Support Agent helping troubleshoot client issues.
 
 SUPPORT QUERY: {query}
 {platform_context}
@@ -92,36 +92,51 @@ INSTRUCTIONS:
 4. Only state "no documentation available" if there is genuinely NO content provided above
 5. When content is available, be confident in providing platform guidance based on that content
 
-RESPONSE FORMAT:
+RESPONSE FORMAT - Follow this structure exactly:
+
+## Feature Overview
+Start by explaining what the requested feature/functionality is and how it works in Blueshift:
+- What the feature does
+- How it works conceptually
+- What business value it provides
+- Any prerequisites or requirements
 
 ## Platform Navigation Steps
-MANDATORY: You MUST check ALL documentation sources provided above (Help Docs, Confluence, JIRA tickets, Zendesk tickets, API docs) for platform navigation steps.
+Provide detailed step-by-step instructions for accessing and configuring the feature:
+- Specific UI navigation (which menus, tabs, buttons to click)
+- Exact field names and settings to configure
+- Screenshots or UI element references when available
+- Required permissions or access levels
 
-SEARCH PROCESS:
-1. Look through HELP DOCS content for [STEP LIST], [HEADING], and [INSTRUCTION] tags
-2. Check CONFLUENCE content for internal platform workflows and navigation guides
-3. Review JIRA TICKETS for engineering details about platform UI elements and navigation
-4. Examine ZENDESK TICKETS for step-by-step instructions agents provided to customers
-5. Check API DOCS content for integration and platform setup steps
+MANDATORY: Check ALL documentation sources provided above (Help Docs, Confluence, JIRA tickets, Zendesk tickets, API docs) for navigation details.
 
-EXTRACT STEPS if found in ANY source:
-- Use exact terminology from whichever source contains the steps
-- Include specific UI elements (tabs, buttons, modes) mentioned in any source
-- Clearly identify which source provided the steps (e.g., "From Confluence workflow guide:" or "From Support Ticket #123:")
+## Troubleshooting Steps
+When the feature isn't working as expected, check these items in order:
+1. **Platform Configuration Issues**
+   - Verify correct settings in the UI
+   - Check required fields are populated
+   - Confirm user permissions and access levels
 
-ONLY write "Specific platform navigation steps were not found" if you have thoroughly checked ALL sources above and found NO step-by-step navigation instructions in any of them.
+2. **Data and Integration Issues**
+   - Check data flow and integration points
+   - Verify API connections and authentication
+   - Review data formatting and structure
 
-## Troubleshooting Guidance
-Provide technical troubleshooting based on Blueshift platform knowledge:
-- Common causes of this issue
-- What to check in logs/databases
-- Relevant Athena queries to investigate
-- API endpoints or system components to examine
+3. **Technical Investigation**
+   - Database queries to check execution logs
+   - Error patterns to look for in customer_campaign_logs.campaign_execution_v3
+   - API endpoints to test functionality
+   - Common error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
+
+4. **Advanced Debugging**
+   - Specific Athena queries to investigate further
+   - System components to examine
+   - Log files and monitoring to review
 
 ## Internal Notes
 - Database: customer_campaign_logs.campaign_execution_v3 for error analysis
 - API Base: https://api.getblueshift.com
-- Common error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
+- This is internal support guidance - never suggest contacting Blueshift support
 
 Remember: Be honest about what information is available vs. what you're inferring from general knowledge."""
 

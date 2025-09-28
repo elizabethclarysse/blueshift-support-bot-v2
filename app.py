@@ -69,22 +69,23 @@ def call_anthropic_api(query, platform_resources=None):
             resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r]
 
             if resources_with_content:
-                platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION (FULL CONTENT):\n"
-                for i, resource in enumerate(resources_with_content[:2]):  # Top 2 with content
-                    platform_context += f"{i+1}. {resource['title']}\n"
+                platform_context = "\n\nCOMPREHENSIVE PLATFORM DOCUMENTATION (FULL CONTENT FROM ALL SOURCES):\n"
+                for i, resource in enumerate(resources_with_content[:4]):  # Top 4 with content from all sources
+                    platform_context += f"{i+1}. [{resource.get('source', 'unknown').upper()}] {resource['title']}\n"
                     platform_context += f"   URL: {resource['url']}\n"
-                    platform_context += f"   CONTENT:\n{resource['content']}\n\n"
+                    platform_context += f"   DETAILED CONTENT:\n{resource['content']}\n"
+                    platform_context += "   " + "="*50 + "\n\n"
             else:
                 # Fallback to just URLs
                 platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION:\n"
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
 
-        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
+        prompt = f"""You are a Blueshift support agent helping troubleshoot client issues.
 
 INTERNAL SUPPORT QUERY: {query}
 
-CONTEXT: This is an internal tool used BY Blueshift support staff to troubleshoot customer tickets, not customer-facing.
+CONTEXT: This is an internal tool used BY Blueshift support to troubleshoot customer tickets, not customer-facing.
 {platform_context}
 
 RESPONSE REQUIREMENTS:
@@ -92,23 +93,35 @@ RESPONSE REQUIREMENTS:
 STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
 ## STEP-BY-STEP PLATFORM INSTRUCTIONS
-First, provide detailed step-by-step instructions for how to complete the requested task or configuration in the Blueshift platform.
 
-CRITICAL: Use the FULL CONTENT from the platform documentation provided above - this contains the exact steps, button names, and field labels. Do NOT make up steps or guess - extract the precise instructions from the documentation content provided.
+MANDATORY REQUIREMENT: Extract and provide EXACT step-by-step instructions from the comprehensive platform documentation provided above. You have access to content from Help Docs, API Docs, Confluence, JIRA, and Zendesk.
 
-Be very specific about:
-- Which menu/section to navigate to in the platform (from the documentation)
-- Exact button names and field labels (from the documentation)
-- Required settings and configurations (from the documentation)
-- Prerequisites or permissions needed (from the documentation)
-- Reference the relevant help docs URLs for additional details
+CRITICAL INSTRUCTIONS:
+1. READ through ALL the documentation content provided above
+2. Find the sections that contain actual navigation steps, button clicks, and UI instructions
+3. Extract and format these as numbered step-by-step instructions
+4. Use EXACT terminology from the documentation (button names, menu items, field labels)
+5. Include specific navigation paths (e.g., "Go to Campaign Studio > Journey Tab > Click Add Trigger")
+6. Include any prerequisites, permissions, or setup requirements mentioned
 
-If the documentation content is incomplete or doesn't cover the specific query, state this clearly and provide what information is available.
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+**Steps to [task description]:**
+
+1. [First step with exact button/menu names from documentation]
+2. [Second step with specific navigation path from documentation]
+3. [Continue with all steps found in the documentation]
+
+**Prerequisites:** [Any requirements mentioned in documentation]
+**Reference:** [List the specific help doc URLs that contained these steps]
+
+IF the documentation doesn't contain specific platform steps, state: "Detailed platform steps not found in available documentation. Available information: [summarize what was found]"
+
+DO NOT provide generic or assumed steps. ONLY use information directly extracted from the provided documentation content.
 
 ## TROUBLESHOOTING GUIDANCE
 Then provide technical troubleshooting information:
 
-1. INTERNAL PERSPECTIVE: You are helping Blueshift support agents, not customers. Never say "contact Blueshift support" - WE ARE the support team.
+1. INTERNAL PERSPECTIVE: You are helping Blueshift support engineers, not customers. Never say "contact Blueshift support" - WE ARE the support team.
 
 2. TECHNICAL TROUBLESHOOTING FOCUS:
    - Provide specific debugging steps
@@ -550,18 +563,18 @@ def search_help_docs(query, limit=3):
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # Updated curated list with actual working URLs
+    # Updated curated list with specific step-by-step instruction URLs
     help_docs_expanded = [
-        {"title": "Blueshift Implementation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002642894-Blueshift-implementation-overview", "keywords": ["implementation", "setup", "getting", "started", "platform", "overview", "configuration"]},
-        {"title": "Intelligent Customer Engagement Platform", "url": "https://help.blueshift.com/hc/en-us/articles/4405219611283-Blueshift-s-Intelligent-Customer-Engagement-Platform", "keywords": ["platform", "customer", "engagement", "features", "overview", "capabilities"]},
+        {"title": "Campaign Studio - Step by Step Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "create", "setup", "journey", "trigger", "step", "by", "step"]},
+        {"title": "Launch the Campaign - Detailed Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4408718512531-Launch-the-Campaign", "keywords": ["launch", "campaign", "activate", "go", "live", "publish", "deploy"]},
+        {"title": "Campaign Flow Control - Navigation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "campaign", "trigger", "journey", "exit", "conditions"]},
+        {"title": "Campaign Actions - Management Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360001578393-Campaign-Actions", "keywords": ["campaign", "actions", "manage", "clone", "pause", "edit", "delete"]},
+        {"title": "Users & User Roles - Access Management", "url": "https://help.blueshift.com/hc/en-us/articles/4402644461843-Users-user-roles", "keywords": ["users", "roles", "permissions", "access", "team", "management"]},
         {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups"]},
-        {"title": "Campaign Creation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199431-Creating-campaigns", "keywords": ["campaign", "email", "create", "setup", "marketing", "messaging"]},
-        {"title": "Journey Builder Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199491-Journey-Builder", "keywords": ["journey", "automation", "workflow", "trigger", "customer", "path"]},
         {"title": "Event Tracking Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199351-Event-tracking", "keywords": ["event", "tracking", "data", "analytics", "customer", "behavior"]},
-        {"title": "Integration Setup Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199311-Integration-setup", "keywords": ["integration", "api", "setup", "data", "sync", "external"]},
-        {"title": "SDK Implementation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360043199371-SDK-implementation", "keywords": ["sdk", "mobile", "implementation", "android", "ios", "developer"]},
-        {"title": "Email Campaign Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199411-Email-campaigns", "keywords": ["email", "campaign", "setup", "template", "design", "send"]},
-        {"title": "Push Notification Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199451-Push-notifications", "keywords": ["push", "notification", "mobile", "setup", "messaging", "alert"]}
+        {"title": "Integration Setup - App Hub Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/28092370413331-Amplitude", "keywords": ["integration", "app", "hub", "navigate", "setup", "connect", "external"]},
+        {"title": "Mandrill Email Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4403082287379-Mandrill-email", "keywords": ["email", "mandrill", "configuration", "setup", "smtp", "provider"]},
+        {"title": "Tips & Tricks - Platform Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/6778616627347-Tips-tricks", "keywords": ["tips", "tricks", "navigation", "platform", "best", "practices", "how", "to"]}
     ]
 
     query_lower = query.lower()
@@ -721,28 +734,66 @@ def generate_related_resources(query):
 
     logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
 
-    # Fetch actual content from top help docs for accurate step-by-step instructions
+    # Fetch actual content from ALL resources for comprehensive step-by-step instructions
     help_docs_with_content = []
     for doc in help_docs:
         content = fetch_help_doc_content(doc['url'])
-        help_docs_with_content.append({
-            'title': doc['title'],
-            'url': doc['url'],
-            'content': content[:2000] if content else "Content not available"  # Limit content length
-        })
+        if content and len(content.strip()) > 50:  # Only include if substantial content
+            help_docs_with_content.append({
+                'title': doc['title'],
+                'url': doc['url'],
+                'content': content[:3000],  # More content for better instructions
+                'source': 'help_docs'
+            })
 
     # Fetch content from API docs too
     api_docs_with_content = []
     for doc in api_docs:
         content = fetch_help_doc_content(doc['url'])
-        api_docs_with_content.append({
-            'title': doc['title'],
-            'url': doc['url'],
-            'content': content[:2000] if content else "Content not available"
-        })
+        if content and len(content.strip()) > 50:
+            api_docs_with_content.append({
+                'title': doc['title'],
+                'url': doc['url'],
+                'content': content[:3000],
+                'source': 'api_docs'
+            })
 
-    # For step-by-step instructions, we prioritize help docs and API docs with content
-    platform_resources_with_content = help_docs_with_content + api_docs_with_content
+    # Include Confluence docs with content if available
+    confluence_docs_with_content = []
+    for doc in confluence_docs:
+        if doc.get('url'):
+            content = fetch_help_doc_content(doc['url'])
+            if content and len(content.strip()) > 50:
+                confluence_docs_with_content.append({
+                    'title': doc['title'],
+                    'url': doc['url'],
+                    'content': content[:3000],
+                    'source': 'confluence'
+                })
+
+    # Combine ALL resources with content for comprehensive AI analysis
+    platform_resources_with_content = help_docs_with_content + api_docs_with_content + confluence_docs_with_content
+
+    logger.info(f"Content-rich resources: help_docs={len(help_docs_with_content)}, api_docs={len(api_docs_with_content)}, confluence={len(confluence_docs_with_content)}")
+
+    # Include ticket summaries for context (without full content to save tokens)
+    if jira_tickets:
+        for ticket in jira_tickets[:2]:  # Top 2 JIRA tickets
+            platform_resources_with_content.append({
+                'title': ticket['title'],
+                'url': ticket['url'],
+                'content': f"Related JIRA ticket: {ticket['title']}",
+                'source': 'jira'
+            })
+
+    if support_tickets:
+        for ticket in support_tickets[:2]:  # Top 2 Zendesk tickets
+            platform_resources_with_content.append({
+                'title': ticket['title'],
+                'url': ticket['url'],
+                'content': f"Related support ticket: {ticket['title']}",
+                'source': 'zendesk'
+            })
 
     return {
         'help_docs': help_docs,

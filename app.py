@@ -95,9 +95,21 @@ CRITICAL INSTRUCTIONS FOR ACCURACY:
 RESPONSE FORMAT:
 
 ## Platform Navigation Steps
-[Only include if ACTUALLY found in documentation above]
-[If found, format as numbered list with exact terminology from docs]
-[If NOT found, write: "Specific platform navigation steps were not found in the available documentation."]
+MANDATORY: You MUST check ALL documentation sources provided above (Help Docs, Confluence, JIRA tickets, Zendesk tickets, API docs) for platform navigation steps.
+
+SEARCH PROCESS:
+1. Look through HELP DOCS content for [STEP LIST], [HEADING], and [INSTRUCTION] tags
+2. Check CONFLUENCE content for internal platform workflows and navigation guides
+3. Review JIRA TICKETS for engineering details about platform UI elements and navigation
+4. Examine ZENDESK TICKETS for step-by-step instructions agents provided to customers
+5. Check API DOCS content for integration and platform setup steps
+
+EXTRACT STEPS if found in ANY source:
+- Use exact terminology from whichever source contains the steps
+- Include specific UI elements (tabs, buttons, modes) mentioned in any source
+- Clearly identify which source provided the steps (e.g., "From Confluence workflow guide:" or "From Support Ticket #123:")
+
+ONLY write "Specific platform navigation steps were not found" if you have thoroughly checked ALL sources above and found NO step-by-step navigation instructions in any of them.
 
 ## Troubleshooting Guidance
 Provide technical troubleshooting based on Blueshift platform knowledge:
@@ -686,17 +698,37 @@ def fetch_help_doc_content(url, max_content_length=4000):
             main_content = soup.body if soup.body else soup
             logger.info("Using fallback body content")
 
-        # Extract text while preserving some structure
-        # Look for step-by-step content specifically
-        step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open', 'choose']
+        # Enhanced text extraction to preserve step-by-step structure
+        step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open', 'choose', 'tab', 'mode', 'view', 'add', 'configure']
 
         text_content = ""
-        for element in main_content.find_all(['p', 'li', 'div', 'h1', 'h2', 'h3', 'h4']):
+
+        # First, try to extract ordered/unordered lists which often contain steps
+        lists = main_content.find_all(['ol', 'ul'])
+        for list_elem in lists:
+            list_items = list_elem.find_all('li')
+            if list_items:
+                text_content += "\n[STEP LIST]\n"
+                for i, item in enumerate(list_items, 1):
+                    text = item.get_text(strip=True)
+                    if text:
+                        text_content += f"{i}. {text}\n"
+                text_content += "[END STEP LIST]\n\n"
+
+        # Then extract headings and paragraphs with structure preservation
+        for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div']):
             text = element.get_text(strip=True)
-            if text and len(text) > 10:  # Ignore very short text
+            if text and len(text) > 15:  # Ignore very short text
+
+                # Mark headings clearly
+                if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                    text_content += f"\n[HEADING] {text}\n"
+
                 # Prioritize content that looks like instructions
-                if any(indicator in text.lower() for indicator in step_indicators):
+                elif any(indicator in text.lower() for indicator in step_indicators):
                     text_content += f"\n[INSTRUCTION] {text}\n"
+
+                # Regular content
                 else:
                     text_content += f"{text}\n"
 
@@ -802,13 +834,13 @@ def generate_related_resources(query):
 
     logger.info(f"Validated resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
 
-    # Fetch content only from high-value sources
+    # Fetch content from ALL sources that might contain platform steps
     resources_with_content = []
 
-    # Prioritize help docs and API docs for content fetching
+    # 1. Help docs - usually have the best step-by-step instructions
     for doc in help_docs[:2]:  # Top 2 help docs
         content = fetch_help_doc_content(doc['url'])
-        if content and len(content.strip()) > 100:  # Require substantial content
+        if content and len(content.strip()) > 100:
             resources_with_content.append({
                 'title': doc['title'],
                 'url': doc['url'],
@@ -817,6 +849,7 @@ def generate_related_resources(query):
             })
             logger.info(f"✅ Successfully fetched help doc content: {doc['title']}")
 
+    # 2. API docs - for technical integration steps
     for doc in api_docs[:2]:  # Top 2 API docs
         content = fetch_help_doc_content(doc['url'])
         if content and len(content.strip()) > 100:
@@ -828,22 +861,52 @@ def generate_related_resources(query):
             })
             logger.info(f"✅ Successfully fetched API doc content: {doc['title']}")
 
-    # Add ticket summaries for context (without full content to save tokens)
-    for ticket in jira_tickets[:2]:
-        resources_with_content.append({
-            'title': ticket['title'],
-            'url': ticket['url'],
-            'content': f"JIRA Ticket Reference: {ticket['title']} - Check this ticket for technical details.",
-            'source': 'jira'
-        })
+    # 3. Confluence docs - internal documentation may have detailed platform steps
+    for doc in confluence_docs[:2]:  # Top 2 Confluence docs
+        if doc.get('url'):
+            content = fetch_help_doc_content(doc['url'])
+            if content and len(content.strip()) > 100:
+                resources_with_content.append({
+                    'title': doc['title'],
+                    'url': doc['url'],
+                    'content': content,
+                    'source': 'confluence'
+                })
+                logger.info(f"✅ Successfully fetched Confluence content: {doc['title']}")
 
+    # 4. JIRA tickets - may contain platform navigation details from engineering
+    for ticket in jira_tickets[:2]:
+        if ticket.get('url'):
+            # For JIRA tickets, include more detailed summary since they often have step-by-step details
+            ticket_content = f"JIRA Ticket: {ticket['title']}\n"
+            if 'description' in ticket:
+                ticket_content += f"Description: {ticket['description'][:500]}\n"
+            ticket_content += f"This engineering ticket may contain platform navigation steps or UI element references."
+
+            resources_with_content.append({
+                'title': ticket['title'],
+                'url': ticket['url'],
+                'content': ticket_content,
+                'source': 'jira'
+            })
+            logger.info(f"✅ Added JIRA ticket details: {ticket['title']}")
+
+    # 5. Support tickets - agents may have provided step-by-step instructions to customers
     for ticket in support_tickets[:2]:
-        resources_with_content.append({
-            'title': ticket['title'],
-            'url': ticket['url'],
-            'content': f"Support Ticket Reference: {ticket['title']} - Similar customer issue.",
-            'source': 'zendesk'
-        })
+        if ticket.get('url'):
+            # For Zendesk tickets, include more context since support agents often provide steps
+            ticket_content = f"Support Ticket: {ticket['title']}\n"
+            if 'description' in ticket:
+                ticket_content += f"Issue: {ticket['description'][:500]}\n"
+            ticket_content += f"This support ticket may contain step-by-step platform navigation instructions provided by agents."
+
+            resources_with_content.append({
+                'title': ticket['title'],
+                'url': ticket['url'],
+                'content': ticket_content,
+                'source': 'zendesk'
+            })
+            logger.info(f"✅ Added Zendesk ticket details: {ticket['title']}")
 
     logger.info(f"Final content-rich resources: {len(resources_with_content)}")
 

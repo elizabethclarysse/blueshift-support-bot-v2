@@ -54,7 +54,7 @@ logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
 logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
 def call_anthropic_api(query, platform_resources=None):
-    """Call Anthropic Claude API with STRICT accuracy requirements"""
+    """Call Anthropic Claude API with BALANCED accuracy requirements"""
     try:
         headers = {
             'x-api-key': AI_API_KEY,
@@ -71,56 +71,66 @@ def call_anthropic_api(query, platform_resources=None):
 
             if resources_with_content:
                 has_actual_content = True
-                platform_context = "\n\nACTUAL DOCUMENTATION CONTENT:\n"
-                for i, resource in enumerate(resources_with_content[:3]):
+                platform_context = "\n\nDOCUMENTATION CONTENT FROM SEARCH RESULTS:\n"
+                for i, resource in enumerate(resources_with_content[:4]):
                     platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
                     platform_context += f"URL: {resource['url']}\n"
-                    platform_context += f"CONTENT:\n{resource['content'][:1500]}\n"
+                    platform_context += f"CONTENT:\n{resource['content'][:2000]}\n"
                     platform_context += "="*50 + "\n"
             else:
-                platform_context = "\n\nNO DETAILED CONTENT AVAILABLE - Only resource links found:\n"
+                platform_context = "\n\nRELEVANT RESOURCES FOUND (URLs only):\n"
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # STRICT PROMPT - Only provide what you can actually see
-        # Build conditional sections based on content availability
-        if has_actual_content:
-            platform_steps_header = "**Only if actual steps are found in the documentation content above:**"
-            platform_steps_content = "Extract the exact steps from the documentation content."
-        else:
-            platform_steps_header = "**No specific platform navigation steps available** - The search results don't contain detailed UI instructions."
-            platform_steps_content = """To get specific navigation steps, you would need to:
-- Check the official help documentation directly
-- Look for the specific feature in Campaign Studio
-- Contact the product team for detailed UI guidance"""
+        # BALANCED PROMPT - Extract steps when available, provide general guidance when not
+        prompt = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues.
 
-        prompt = f"""You are a Blueshift Support Agent. Answer this query: {query}
-
+SUPPORT QUERY: {query}
 {platform_context}
 
-STRICT RULES:
-1. If no detailed content is shown above, say "I don't have enough specific documentation content to provide detailed platform navigation steps."
-2. ONLY provide specific UI steps if you can see them explicitly described in the content above
-3. Do NOT invent or guess at button names, menu locations, or navigation paths
-4. Be honest about limitations in available information
+INSTRUCTIONS:
+1. Extract specific platform navigation steps from the documentation content above when available
+2. If documentation content contains step-by-step instructions, use them
+3. Combine documentation steps with your Blueshift platform knowledge
+4. Focus on practical troubleshooting guidance
 
 RESPONSE FORMAT:
 
 ## Feature Overview
-Explain what this appears to be about based on Blueshift platform knowledge.
+Explain what this feature/issue is about and how it relates to the Blueshift platform.
 
 ## Platform Navigation Steps
-{platform_steps_header}
+Based on the documentation above and Blueshift platform knowledge:
 
-{platform_steps_content}
+[Provide numbered steps for accessing and configuring the feature in the UI]
+[Include specific menu paths, button names, and navigation instructions]
+[If documentation content has specific steps, extract and use them]
+[If no specific steps in docs, provide general navigation based on Blueshift platform structure]
 
-## Troubleshooting Guidance
-Based on general Blueshift platform knowledge:
-- Common causes and investigation steps
-- Database queries to check in customer_campaign_logs.campaign_execution_v3
-- API endpoints or system components to examine
+## Troubleshooting Steps
+When this feature isn't working as expected:
 
-IMPORTANT: Be completely honest about what specific information is available versus general platform knowledge."""
+1. **Platform Configuration Checks**
+   - Verify settings and required fields
+   - Check user permissions and access
+   - Confirm campaign/trigger status
+
+2. **Common Issues and Solutions**
+   - Typical problems and their fixes
+   - Configuration errors to look for
+   - Data flow issues to investigate
+
+3. **Advanced Debugging**
+   - Database queries: customer_campaign_logs.campaign_execution_v3
+   - Error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
+   - API endpoints to test
+
+## Internal Notes
+- Main troubleshooting database: customer_campaign_logs.campaign_execution_v3
+- API Base: https://api.getblueshift.com
+- This is internal support guidance - provide actionable troubleshooting steps
+
+Remember: Combine information from the documentation with your Blueshift platform knowledge to provide comprehensive, actionable guidance."""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -493,13 +503,10 @@ def search_zendesk_tickets(query, limit=5):
     return []
 
 def search_help_docs(query, limit=3):
-    """Search Blueshift Help Center using Zendesk Help Center API"""
+    """IMPROVED help docs search with better trigger/mobile coverage"""
     try:
-        # Use Zendesk Help Center API to search articles
-        if not ZENDESK_SUBDOMAIN or not ZENDESK_TOKEN:
-            logger.warning("Zendesk Help Center credentials not configured - using fallback")
-        else:
-            # Set up authentication
+        # Try API search first
+        if ZENDESK_SUBDOMAIN and ZENDESK_TOKEN:
             if ZENDESK_EMAIL:
                 auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
                 headers = {
@@ -512,11 +519,10 @@ def search_help_docs(query, limit=3):
                     'Accept': 'application/json'
                 }
 
-            # Use the Help Center articles search API
             search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/help_center/articles/search.json"
             response = requests.get(search_url, headers=headers, params={
                 'query': query,
-                'per_page': 5  # Good balance for Help Center
+                'per_page': 8  # Get more results
             }, timeout=15)
 
             if response.status_code == 200:
@@ -525,82 +531,82 @@ def search_help_docs(query, limit=3):
                 for article in data.get('results', []):
                     title = article.get('title', 'Untitled')
                     url = article.get('html_url', '')
-
                     if title and url:
-                        results.append({
-                            'title': title,
-                            'url': url
-                        })
+                        results.append({'title': title, 'url': url})
 
                 if results:
-                    logger.info(f"Help Center API search found {len(results)} results for '{query}'")
-                    for i, doc in enumerate(results):
-                        logger.info(f"  {i+1}. {doc['title']}")
-                    return results
-                else:
-                    logger.info(f"Help Center API search returned no results for '{query}'")
-            else:
-                logger.error(f"Help Center API error: {response.status_code} - {response.text[:200]}")
+                    logger.info(f"Help Center API found {len(results)} results")
+                    return results[:limit]
 
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # Comprehensive curated list covering all major Blueshift platform topics
+    # EXPANDED curated list with better trigger/mobile coverage
     help_docs_expanded = [
-        {"title": "Campaign Studio - Journey Tab & Detail Mode", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "journey", "detail", "mode", "trigger", "troubleshoot", "filter", "conditions"]},
+        {"title": "Campaign Studio - Journey Tab & Detail Mode", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "journey", "detail", "mode", "trigger", "troubleshoot", "filter", "conditions", "navigation"]},
         {"title": "User Journey in Campaign - Trigger Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign", "keywords": ["user", "journey", "trigger", "troubleshoot", "not", "sending", "evaluation", "filter", "conditions"]},
-        {"title": "Email Campaign Creation and Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173-Email-campaigns", "keywords": ["email", "campaign", "create", "setup", "subject", "line", "personalization", "template", "design"]},
-        {"title": "Personalization and Dynamic Content", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253-Personalization", "keywords": ["personalization", "dynamic", "content", "subject", "line", "custom", "attributes", "merge", "tags"]},
-        {"title": "Message Templates and Content Builder", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333-Message-templates", "keywords": ["message", "template", "content", "builder", "subject", "line", "personalization", "design"]},
-        {"title": "Segmentation and Audience Targeting", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
-        {"title": "Campaign Flow Control - Filter Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "filters", "conditions", "trigger", "exit", "journey"]},
-        {"title": "Journey Testing and Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408718647059-Journey-testing", "keywords": ["journey", "testing", "troubleshoot", "debug", "trigger", "not", "working", "preview"]},
-        {"title": "Event Tracking and Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043199351-Event-tracking", "keywords": ["event", "tracking", "integration", "data", "analytics", "customer", "behavior"]},
-        {"title": "API Integration and Developer Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714493-API-integration", "keywords": ["api", "integration", "developer", "setup", "authentication", "endpoints", "documentation"]},
-        {"title": "Triggered Workflows - Configuration Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4405437140115-Triggered-workflows", "keywords": ["triggered", "workflows", "configuration", "setup", "automation", "troubleshoot"]},
-        {"title": "Campaign Performance and Analytics", "url": "https://help.blueshift.com/hc/en-us/articles/19600265288979-Campaign-execution-overview", "keywords": ["campaign", "performance", "analytics", "execution", "metrics", "reporting", "troubleshoot"]}
+        {"title": "Triggered Campaigns - Setup and Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4405437140115-Triggered-workflows", "keywords": ["triggered", "campaigns", "workflows", "configuration", "setup", "automation", "troubleshoot", "not", "working"]},
+        {"title": "Event Triggered Campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/360050760774-Transactions-in-event-triggered-campaigns", "keywords": ["event", "triggered", "campaigns", "transactions", "setup", "troubleshoot", "not", "firing"]},
+        {"title": "Trigger Actions and Conditions", "url": "https://help.blueshift.com/hc/en-us/articles/4408725448467-Trigger-Actions", "keywords": ["trigger", "actions", "conditions", "platform", "navigation", "check", "edit", "setup"]},
+        {"title": "Campaign Flow Control and Filters", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "filters", "conditions", "trigger", "exit", "journey", "not", "working"]},
+        {"title": "Journey Testing and Debugging", "url": "https://help.blueshift.com/hc/en-us/articles/4408718647059-Journey-testing", "keywords": ["journey", "testing", "troubleshoot", "debug", "trigger", "not", "working", "preview", "test"]},
+        {"title": "Campaign Execution and Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/19600265288979-Campaign-execution-overview", "keywords": ["campaign", "execution", "troubleshoot", "trigger", "not", "sending", "issues", "monitoring"]},
+        {"title": "Mobile Push Notifications", "url": "https://help.blueshift.com/hc/en-us/articles/115002714413-Push-notifications", "keywords": ["mobile", "push", "notifications", "app", "trigger", "cloud", "messaging", "setup"]},
+        {"title": "In-App Messages Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199611-In-app-messages", "keywords": ["in-app", "messages", "mobile", "app", "trigger", "cloud", "setup", "configuration"]},
+        {"title": "Mobile SDK Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043199451-Mobile-SDK", "keywords": ["mobile", "sdk", "integration", "app", "trigger", "cloud", "setup", "configuration"]},
+        {"title": "Email Campaign Creation", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173-Email-campaigns", "keywords": ["email", "campaign", "create", "setup", "subject", "line", "personalization", "template"]},
+        {"title": "Personalization and Dynamic Content", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253-Personalization", "keywords": ["personalization", "dynamic", "content", "subject", "line", "custom", "attributes", "merge"]},
+        {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
     ]
 
+    # IMPROVED scoring - much more inclusive
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
-    # Enhanced scoring system
+    # Remove only the most common stop words
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but'}
+    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
+
     scored_docs = []
     for doc in help_docs_expanded:
         score = 0
 
-        # Title matching (highest weight)
+        # Title matching (high weight)
         title_words = set(doc['title'].lower().split())
-        title_matches = query_words.intersection(title_words)
-        score += len(title_matches) * 5
+        title_matches = len([w for w in clean_query_words if w in title_words])
+        score += title_matches * 8
 
-        # Keyword matching
+        # Keyword matching (medium weight)
         keyword_words = set(' '.join(doc['keywords']).lower().split())
-        keyword_matches = query_words.intersection(keyword_words)
-        score += len(keyword_matches) * 3
+        keyword_matches = len([w for w in clean_query_words if w in keyword_words])
+        score += keyword_matches * 4
 
-        # Phrase matching bonus
-        for query_word in query_words:
-            if query_word in doc['title'].lower():
-                score += 2
-            if query_word in ' '.join(doc['keywords']).lower():
-                score += 1
+        # Special bonuses for specific combinations
+        if 'trigger' in clean_query_words:
+            if 'trigger' in doc['keywords']:
+                score += 15  # High bonus for trigger match
 
-        # Special handling for common technical terms
-        if 'external' in query_lower and 'fetch' in query_lower:
-            if 'external' in doc['keywords'] and 'fetch' in doc['keywords']:
-                score += 5
+            # Extra bonus for mobile/app + trigger
+            if any(word in clean_query_words for word in ['app', 'mobile', 'cloud']):
+                if any(word in doc['keywords'] for word in ['mobile', 'app', 'push', 'cloud']):
+                    score += 10
 
+        # Bonus for troubleshooting keywords
+        if any(word in clean_query_words for word in ['not', 'troubleshoot', 'debug', 'help', 'issue']):
+            if any(word in doc['keywords'] for word in ['troubleshoot', 'not', 'working', 'debug']):
+                score += 8
+
+        # Include docs with any relevance
         if score > 0:
             scored_docs.append((score, doc))
 
-    # Sort by score and return top results
+    # Sort and return
     scored_docs.sort(reverse=True, key=lambda x: x[0])
     results = [doc for score, doc in scored_docs[:limit]]
 
-    logger.info(f"Help docs curated search: '{query}' -> found {len(results)} results")
+    logger.info(f"Help docs search: '{query}' -> found {len(results)} results")
     for i, doc in enumerate(results):
-        logger.info(f"  {i+1}. {doc['title']}")
+        logger.info(f"  {i+1}. {doc['title']} (score: {scored_docs[i][0]})")
 
     return results
 
@@ -763,38 +769,52 @@ def fetch_help_doc_content(url, max_content_length=4000):
         return ""
 
 def validate_search_results(query, results, source_name):
-    """Much stricter validation for search results"""
+    """FIXED - More balanced validation that doesn't reject everything"""
     if not results:
         return []
 
     query_words = set(query.lower().split())
     validated_results = []
 
-    # Remove stop words from query for better matching
-    stop_words = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who', 'not'}
-    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 2]
+    # Remove stop words but be less aggressive
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
 
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
 
-        # Check for meaningful word overlap (not just stop words)
+        # Check for meaningful word overlap
         title_words = set(title.split())
         meaningful_matches = len([w for w in clean_query_words if w in title])
 
-        # For trigger-related queries, require "trigger" in title or very high relevance
-        if 'trigger' in clean_query_words:
-            if 'trigger' in title or meaningful_matches >= 2:
-                validated_results.append(result)
-                logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')} (trigger match)")
-            else:
-                logger.info(f"❌ {source_name} result rejected (no trigger relevance): {result.get('title', 'Untitled')}")
-        # For other queries, require at least 2 meaningful word matches
-        elif meaningful_matches >= 2:
+        # MUCH MORE LENIENT validation criteria
+        should_include = False
+
+        # Include if ANY meaningful word matches
+        if meaningful_matches >= 1:
+            should_include = True
+
+        # Include if contains Blueshift-related terms
+        blueshift_terms = {'campaign', 'trigger', 'blueshift', 'api', 'event', 'customer', 'journey', 'studio', 'message'}
+        if any(term in title for term in blueshift_terms):
+            should_include = True
+
+        # For trigger queries, be extra inclusive
+        if 'trigger' in clean_query_words and 'trigger' in title:
+            should_include = True
+
+        # For troubleshooting queries, include anything with troubleshooting terms
+        troubleshooting_terms = {'troubleshoot', 'debug', 'not', 'working', 'issue', 'problem', 'help'}
+        if any(term in clean_query_words for term in ['not', 'troubleshoot', 'debug', 'help']):
+            if any(term in title for term in troubleshooting_terms):
+                should_include = True
+
+        if should_include:
             validated_results.append(result)
             logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')} ({meaningful_matches} matches)")
         else:
-            logger.info(f"❌ {source_name} result rejected (insufficient matches: {meaningful_matches}): {result.get('title', 'Untitled')}")
+            logger.info(f"❌ {source_name} result rejected: {result.get('title', 'Untitled')}")
 
     return validated_results
 

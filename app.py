@@ -125,7 +125,7 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-# --- REPLACEMENT FOR call_anthropic_api ---
+# --- REPLACEMENT FOR call_anthropic_api, WITH GENERATION CONFIG FIX ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration."""
     if not AI_API_KEY:
@@ -155,7 +155,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction for Gemini
-        system_instruction = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -205,11 +205,13 @@ When this feature isn't working as expected:
             "contents": [
                 {"role": "user", "parts": [{"text": full_prompt}]}
             ],
-            "config": {
+            # --- CRITICAL FIX: Changed "config" to "generationConfig" ---
+            "generationConfig": { 
                 "systemInstruction": system_instruction,
                 "temperature": temperature,
                 "maxOutputTokens": 4000
             }
+            # -----------------------------------------------------------
         }
         
         # Add API Key to the URL
@@ -279,7 +281,6 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
 
         # 3. Clean words OR in summary and text (broad match)
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            # Added a fallback search on all content for the OR query
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
         # 4. Single most important word in summary only (fallback)
@@ -341,7 +342,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Format results ---
         results = []
         for score, issue in scored_issues[:limit]:
-            # **FIX: Removed 'if score > 0' filter to allow valid low-scoring matches**
+            # Removed 'if score > 0' filter to allow valid low-scoring matches
             summary = issue.get('fields', {}).get('summary', 'No summary')
             key = issue.get('key', 'Unknown')
             results.append({
@@ -408,7 +409,6 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
 
         # 3. Clean words OR (standard fields)
         or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            # **FIX: Added a fallback broad search on all content for the OR query**
         or_parts.append(f'content ~ "{query}"')
         cql_variants.append(" OR ".join(or_parts))
 
@@ -437,7 +437,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
                 results = run_search(cql)
 
                 if results:
-                    # **FIX: Removed score check - we trust the progressive query, the validation will filter bad results.**
+                    # Removed score check - trust the progressive query, validation handles filtering.
                     final_results = results
                     logger.info(f"Query #{i+1} returned {len(results)} results. Using these results.")
                     break

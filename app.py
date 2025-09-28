@@ -158,10 +158,11 @@ SUPPORT QUERY: {query}
 {platform_context}
 
 INSTRUCTIONS:
-1. Extract specific platform navigation steps from the documentation content above when available
-2. If documentation content contains step-by-step instructions, use them
-3. Combine documentation steps with your Blueshift platform knowledge
-4. Focus on practical troubleshooting guidance
+1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content above.
+2. If documentation content contains step-by-step instructions, use them precisely.
+3. If no specific steps in docs, provide general navigation based on Blueshift platform knowledge.
+4. Combine documentation steps with your Blueshift platform knowledge for comprehensive guidance.
+5. Focus on practical troubleshooting guidance.
 
 RESPONSE FORMAT:
 
@@ -173,8 +174,6 @@ Based on the documentation above and Blueshift platform knowledge:
 
 [Provide numbered steps for accessing and configuring the feature in the UI]
 [Include specific menu paths, button names, and navigation instructions]
-[If documentation content has specific steps, extract and use them]
-[If no specific steps in docs, provide general navigation based on Blueshift platform structure]
 
 ## Troubleshooting Steps
 When this feature isn't working as expected:
@@ -219,14 +218,21 @@ Remember: Combine information from the documentation with your Blueshift platfor
     except Exception as e:
         return f"Error: {str(e)}"
 
-# --- FIX 3: Simplified search_jira_tickets ---
-def search_jira_tickets_improved(query, limit=5):
-    """Simplified JIRA search with better error handling, using API_STATUS"""
-    if not API_STATUS.get('jira', False):
-        logger.warning("JIRA API not available - skipping search")
-        return []
-
+# --- FIX: Reverted/Improved search_jira_tickets_improved for robustness ---
+def search_jira_tickets_improved(query, limit=5, debug=True):
+    """RESTORED: Search JIRA tickets with improved relevance and stop word filtering (progressive queries)"""
     try:
+        if not API_STATUS.get('jira', False):
+            logger.warning("JIRA API not available - skipping search")
+            return []
+
+        # Same stop words as Confluence
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
         auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
         headers = {
             'Authorization': f'Basic {auth}',
@@ -234,89 +240,241 @@ def search_jira_tickets_improved(query, limit=5):
             'Content-Type': 'application/json'
         }
 
-        # Simplified JQL - just search text and summary
-        jql = f'(text ~ "{query}" OR summary ~ "{query}") ORDER BY updated DESC'
-        
-        url = f"{JIRA_URL}/rest/api/3/search"
-        payload = {
-            'jql': jql,
-            'maxResults': limit,
-            'fields': ['summary', 'key', 'status']
-        }
+        # --- Clean query words ---
+        words = query.strip().split()
+        clean_query_words = clean_words(words)
 
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
-        
-        if response.status_code == 200:
-            data = response.json()
-            issues = data.get('issues', [])
-            
-            results = []
-            for issue in issues:
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"JIRA search - Original: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build JQL queries progressively ---
+        jql_variants = []
+
+        # 1. Exact phrase in summary (titles are most relevant)
+        jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
+
+        # 2. Clean words AND in summary and text
+        if len(clean_query_words) > 1:
+            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
+
+        # 3. Clean words OR in summary and text
+        or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
+
+        # 4. Single most important word in summary only
+        if len(clean_query_words) > 0:
+            main_word = max(clean_query_words, key=len)
+            jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
+
+        url = f"{JIRA_URL}/rest/api/3/search"
+
+        # --- Try queries in order ---
+        final_issues = []
+        for i, jql in enumerate(jql_variants):
+            try:
+                logger.info(f"Trying JIRA JQL #{i+1}: {jql}")
+
+                payload = {
+                    'jql': jql,
+                    'maxResults': limit * 3,  # Get more for filtering
+                    'fields': ['summary', 'key', 'status', 'priority', 'issuetype']
+                }
+
+                response = requests.post(url, headers=headers, json=payload, timeout=15)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    issues = data.get('issues', [])
+
+                    if issues:
+                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results")
+                        final_issues = issues
+                        break
+                    else:
+                        logger.info(f"JIRA query #{i+1} returned no results")
+                else:
+                    logger.error(f"JIRA API error on query #{i+1}: {response.status_code} - {response.text[:200]}")
+
+            except Exception as e:
+                logger.error(f"JIRA query #{i+1} failed: {e}")
+                continue
+
+        if not final_issues:
+            logger.info("No JIRA results found with any query variant")
+            return []
+
+        # --- Score and filter results (retaining existing logic) ---
+        def score_issue(issue):
+            summary = issue.get('fields', {}).get('summary', '').lower()
+            matches = sum(1 for word in clean_query_words if word.lower() in summary)
+            exact_bonus = 10 if query.lower() in summary else 0
+            priority = issue.get('fields', {}).get('priority', {})
+            priority_name = priority.get('name', '').lower() if priority else ''
+            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
+            return matches * 3 + exact_bonus + priority_bonus
+
+        # Sort by relevance score
+        scored_issues = [(score_issue(issue), issue) for issue in final_issues]
+        scored_issues.sort(reverse=True, key=lambda x: x[0])
+
+        # --- Format results ---
+        results = []
+        for score, issue in scored_issues[:limit]:
+            # Retaining the original score > 0 check to filter out irrelevant tickets
+            if score > 0:
                 summary = issue.get('fields', {}).get('summary', 'No summary')
                 key = issue.get('key', 'Unknown')
                 results.append({
                     'title': f"{key}: {summary}",
                     'url': f"{JIRA_URL}/browse/{key}"
                 })
-            
-            logger.info(f"JIRA search returned {len(results)} results for '{query}'")
-            return results
-        else:
-            logger.error(f"JIRA search failed: {response.status_code} - {response.text[:200]}")
-            return []
-            
+
+        logger.info(f"JIRA search found {len(results)} relevant results")
+        return results
+
     except Exception as e:
-        logger.error(f"JIRA search exception: {e}")
+        logger.error(f"JIRA search error: {e}")
         return []
-# --- END FIX 3 ---
+# --- END FIX ---
 
-# --- FIX 3: Simplified search_confluence_docs ---
-def search_confluence_docs_improved(query, limit=5):
-    """Simplified Confluence search, using API_STATUS"""
-    if not API_STATUS.get('confluence', False):
-        logger.warning("Confluence API not available - skipping search")
-        return []
-
+# --- FIX: Reverted/Improved search_confluence_docs_improved for robustness ---
+def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
+    """
+    RESTORED: Confluence search with progressive CQL and improved error handling:
+    - Drop stop words from queries
+    - Progressive loosening strategy
+    """
     try:
-        # Simple CQL search
-        cql = f'text ~ "{query}" OR title ~ "{query}"'
-        
-        url = f"{CONFLUENCE_URL}/rest/api/content/search"
-        params = {
-            "cql": cql,
-            "limit": limit,
-            "expand": "content"
-        }
-        
-        response = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=20)
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            
-            for item in data.get("results", []):
-                title = item.get("title", "Untitled")
-                content = item.get("content", {})
-                page_id = content.get("id")
-                
-                if page_id:
-                    # Use the most reliable URL format
-                    page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
-                    results.append({
-                        "title": title,
-                        "url": page_url
-                    })
-            
-            logger.info(f"Confluence search returned {len(results)} results for '{query}'")
-            return results
-        else:
-            logger.error(f"Confluence search failed: {response.status_code} - {response.text[:200]}")
+        if not API_STATUS.get('confluence', False):
+            logger.warning("Confluence API not available - skipping search")
             return []
-            
+
+        # Stop words that break Confluence CQL
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            """Remove stop words and short words"""
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        def run_search(cql):
+            url = f"{CONFLUENCE_URL}/rest/api/content/search"
+            params = {
+                "cql": cql,
+                "limit": limit * 10,   # pull more for debugging
+                "expand": "content"
+            }
+            resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
+            resp.raise_for_status()
+            return resp.json().get("results", [])
+
+        # --- Clean query words ---
+        words = query.strip().split()
+        clean_query_words = clean_words(words)
+
+        # If we filtered out everything, use original words
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Original query: '{query}' -> Clean words: {clean_query_words}")
+
+        # --- Build queries progressively ---
+        cql_variants = []
+
+        # 1. Exact phrase (standard fields)
+        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
+
+        # 2. Clean words AND (standard fields)
+        if len(clean_query_words) > 1:
+            and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            cql_variants.append(" AND ".join(and_parts))
+
+        # 3. Clean words OR (standard fields)
+        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        cql_variants.append(" OR ".join(or_parts))
+
+        # 4. Single most important word (if we have multiple)
+        if len(clean_query_words) > 1:
+            # Use longest word as most likely to be significant
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
+
+        # 5. Very broad fallback - just search for any word
+        if clean_query_words:
+            # Pick the most specific word (longest) and search broadly
+            main_word = max(clean_query_words, key=len)
+            cql_variants.append(f'text ~ "{main_word}"')
+
+        # Add space filter if provided
+        if space_key:
+            cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
+
+        # --- Try queries in order, with score quality check ---
+        final_results = []
+        for i, cql in enumerate(cql_variants):
+            try:
+                logger.info(f"Trying Confluence CQL #{i+1}: {cql}")
+                results = run_search(cql)
+
+                if results:
+                    # Score is often missing in Confluence API, use a default of 1 if missing
+                    top_score = max(r.get("score", 0) or 1 for r in results[:3])
+                    logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
+
+                    # If we got decent results (score > 1) or this is our last attempt, use them
+                    if top_score > 1 or i == len(cql_variants) - 1:
+                        final_results = results
+                        logger.info(f"Using results from query #{i+1}")
+                        break
+                    else:
+                        logger.info(f"Top score {top_score} too low, trying next query...")
+
+            except requests.exceptions.HTTPError as http_e:
+                 logger.error(f"Confluence query #{i+1} failed HTTP: {http_e.response.status_code} - {http_e.response.text[:100]}", exc_info=True)
+                 continue
+            except Exception as e:
+                logger.error(f"Confluence query #{i+1} failed: {e}", exc_info=True)
+                continue
+
+        if not final_results:
+             logger.info("No Confluence results found with any query variant")
+             return []
+
+        # --- Re-rank: trust API score, tiny title nudge ---
+        def score_fn(r):
+            api_score = r.get("score", 0) or 0
+            title = (r.get("title") or "").lower()
+
+            # Check if any clean words appear in title
+            title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
+            boost = title_word_matches * 5  # Small boost per matching word
+
+            return api_score * 100 + boost
+
+        ranked = sorted(final_results, key=score_fn, reverse=True)
+
+        # --- Format results ---
+        formatted = []
+        for r in ranked[:limit]:
+            page_id = r.get("content", {}).get("id")
+            title = r.get("title") or "Untitled"
+            if not page_id:
+                continue
+            # Use the most common and reliable URL format
+            page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+            formatted.append({"title": title, "url": page_url})
+
+        logger.info(f"Confluence search found {len(formatted)} results")
+        return formatted
+
     except Exception as e:
-        logger.error(f"Confluence search exception: {e}")
+        logger.error(f"Confluence search error: {e}", exc_info=True)
         return []
-# --- END FIX 3 ---
+# --- END FIX ---
+
 
 # --- FIX 3: Simplified search_zendesk_tickets ---
 def search_zendesk_tickets_improved(query, limit=5):
@@ -369,15 +527,10 @@ def search_zendesk_tickets_improved(query, limit=5):
 
 
 def search_help_docs(query, limit=3):
-    """IMPROVED help docs search with better trigger/mobile coverage"""
-    # NOTE: This function is kept largely the same as it uses an internal-only logic
-    # that is not easily simplified, but it does rely on Zendesk credentials.
-    # The Zendesk API search part is now implicitly handled by API_STATUS being checked
-    # in the Zendesk ticket search. For now, we'll keep the curated list logic.
+    """IMPROVED help docs search with better trigger/mobile coverage (using curated list as fallback)"""
     try:
-        # Try API search first (moved to use same API_STATUS check logic if possible)
+        # Try API search first
         if ZENDESK_SUBDOMAIN and ZENDESK_TOKEN and API_STATUS.get('zendesk', False):
-            # ... (rest of the Zendesk API logic is correct but redundant if API_STATUS is False)
             if ZENDESK_EMAIL:
                 auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
                 headers = {
@@ -414,7 +567,7 @@ def search_help_docs(query, limit=3):
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # EXPANDED curated list with better trigger/mobile coverage
+    # EXPANDED curated list logic (kept as solid fallback)
     help_docs_expanded = [
         {"title": "Campaign Studio - Journey Tab & Detail Mode", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "journey", "detail", "mode", "trigger", "troubleshoot", "filter", "conditions", "navigation"]},
         {"title": "User Journey in Campaign - Trigger Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign", "keywords": ["user", "journey", "trigger", "troubleshoot", "not", "sending", "evaluation", "filter", "conditions"]},
@@ -432,59 +585,45 @@ def search_help_docs(query, limit=3):
         {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
     ]
 
-    # IMPROVED scoring - much more inclusive
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
-    # Remove only the most common stop words
     stop_words = {'the', 'a', 'an', 'and', 'or', 'but'}
     clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
 
     scored_docs = []
     for doc in help_docs_expanded:
         score = 0
-
-        # Title matching (high weight)
         title_words = set(doc['title'].lower().split())
         title_matches = len([w for w in clean_query_words if w in title_words])
         score += title_matches * 8
 
-        # Keyword matching (medium weight)
         keyword_words = set(' '.join(doc['keywords']).lower().split())
         keyword_matches = len([w for w in clean_query_words if w in keyword_words])
         score += keyword_matches * 4
 
-        # Special bonuses for specific combinations
         if 'trigger' in clean_query_words:
             if 'trigger' in doc['keywords']:
-                score += 15  # High bonus for trigger match
-
-            # Extra bonus for mobile/app + trigger
+                score += 15 
             if any(word in clean_query_words for word in ['app', 'mobile', 'cloud']):
                 if any(word in doc['keywords'] for word in ['mobile', 'app', 'push', 'cloud']):
                     score += 10
 
-        # Bonus for troubleshooting keywords
         if any(word in clean_query_words for word in ['not', 'troubleshoot', 'debug', 'help', 'issue']):
             if any(word in doc['keywords'] for word in ['troubleshoot', 'not', 'working', 'debug']):
                 score += 8
 
-        # Include docs with any relevance
         if score > 0:
             scored_docs.append((score, doc))
 
-    # Sort and return
     scored_docs.sort(reverse=True, key=lambda x: x[0])
     results = [doc for score, doc in scored_docs[:limit]]
 
-    logger.info(f"Help docs search: '{query}' -> found {len(results)} results")
-    for i, doc in enumerate(results):
-        logger.info(f"  {i+1}. {doc['title']} (score: {scored_docs[i][0]})")
-
+    logger.info(f"Help docs search (fallback): '{query}' -> found {len(results)} results")
     return results
 
 def search_blueshift_api_docs(query, limit=3):
-    """Search Blueshift API documentation"""
+    """Search Blueshift API documentation (kept same)"""
     try:
         # Search the main API reference page with working endpoint URLs
         api_docs = [
@@ -609,7 +748,7 @@ def fetch_help_doc_content_improved(url, max_content_length=2000):
         return ""
 # --- END FIX 4 ---
 
-# --- FIX 1: Improved Validation Logic ---
+# --- FIX 1: Improved Validation Logic (Kept same) ---
 def validate_search_results_improved(query, results, source_name):
     """Much more lenient validation focused on actual relevance"""
     if not results:
@@ -661,42 +800,17 @@ def validate_search_results_improved(query, results, source_name):
 
 def verify_step_extraction(query, resources_with_content):
     """Verify if actual step-by-step instructions exist in the content (kept for completeness)"""
-    step_indicators = [
-        'step 1', 'step 2', '1.', '2.', '3.',
-        'navigate to', 'click on', 'go to', 'select',
-        'open', 'choose', 'access', 'find'
-    ]
-
-    found_steps = []
-    for resource in resources_with_content:
-        content = resource.get('content', '').lower()
-
-        for indicator in step_indicators:
-            if indicator in content:
-                # Extract the sentence containing the step
-                sentences = content.split('.')
-                for sentence in sentences:
-                    if indicator in sentence:
-                        found_steps.append({
-                            'source': resource['title'],
-                            'step': sentence.strip()[:200]  # Limit length
-                        })
-                        break
-
-    logger.info(f"Found {len(found_steps)} potential steps in documentation")
-    return found_steps
-
-def test_content_fetching():
-    """Test function to debug content fetching (removed from main execution)"""
+    # This function is not used in the current flow, but kept in case it is reintroduced.
     pass
 
-# --- FIX 5: Update Main Resource Generation Function ---
+# --- FIX 5: Update Main Resource Generation Function (Updated to use restored functions) ---
 def generate_related_resources_improved(query):
     """Improved resource generation with better validation and search calls"""
     logger.info(f"🔍 Searching for resources: '{query}'")
 
-    # Perform searches with improved functions
+    # Perform searches with restored/improved functions
     help_docs = validate_search_results_improved(query, search_help_docs(query, limit=4), "Help Docs")
+    # Using the restored functions:
     confluence_docs = validate_search_results_improved(query, search_confluence_docs_improved(query, limit=4), "Confluence")
     jira_tickets = validate_search_results_improved(query, search_jira_tickets_improved(query, limit=4), "JIRA")
     support_tickets = validate_search_results_improved(query, search_zendesk_tickets_improved(query, limit=4), "Zendesk")
@@ -752,7 +866,6 @@ def generate_related_resources_improved(query):
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets,
         'api_docs': api_docs,
-        # 'platform_resources' is no longer explicitly created but the total validated set is available
         'platform_resources_with_content': resources_with_content
     }
 # --- END FIX 5 ---

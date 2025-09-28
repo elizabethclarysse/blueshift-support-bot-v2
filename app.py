@@ -79,18 +79,18 @@ def call_anthropic_api(query, platform_resources=None):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # IMPROVED PROMPT - Focus on accuracy over fabrication
-        prompt = f"""You are a Blueshift support agent helping troubleshoot client issues.
+        # BALANCED PROMPT - Accurate but assertive when content is available
+        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
 
 SUPPORT QUERY: {query}
 {platform_context}
 
-CRITICAL INSTRUCTIONS FOR ACCURACY:
-1. ONLY provide step-by-step instructions if they are EXPLICITLY found in the documentation content above
-2. If no specific steps are found, say so honestly and provide general troubleshooting guidance
-3. Do NOT fabricate or guess at platform navigation steps
-4. Use EXACT terminology from the documentation when available
-5. If content is incomplete or unclear, acknowledge this limitation
+INSTRUCTIONS:
+1. If documentation content is provided above, USE IT to provide detailed platform navigation steps
+2. Extract specific steps, UI elements, and navigation paths from any available content
+3. If multiple sources contain relevant information, combine them for comprehensive guidance
+4. Only state "no documentation available" if there is genuinely NO content provided above
+5. When content is available, be confident in providing platform guidance based on that content
 
 RESPONSE FORMAT:
 
@@ -531,18 +531,20 @@ def search_help_docs(query, limit=3):
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # Updated curated list with trigger troubleshooting and detailed platform navigation URLs
+    # Comprehensive curated list covering all major Blueshift platform topics
     help_docs_expanded = [
         {"title": "Campaign Studio - Journey Tab & Detail Mode", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "journey", "detail", "mode", "trigger", "troubleshoot", "filter", "conditions"]},
         {"title": "User Journey in Campaign - Trigger Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign", "keywords": ["user", "journey", "trigger", "troubleshoot", "not", "sending", "evaluation", "filter", "conditions"]},
-        {"title": "Trigger Actions - Platform Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/4408725448467-Trigger-Actions", "keywords": ["trigger", "actions", "platform", "navigation", "check", "edit", "conditions"]},
+        {"title": "Email Campaign Creation and Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173-Email-campaigns", "keywords": ["email", "campaign", "create", "setup", "subject", "line", "personalization", "template", "design"]},
+        {"title": "Personalization and Dynamic Content", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253-Personalization", "keywords": ["personalization", "dynamic", "content", "subject", "line", "custom", "attributes", "merge", "tags"]},
+        {"title": "Message Templates and Content Builder", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333-Message-templates", "keywords": ["message", "template", "content", "builder", "subject", "line", "personalization", "design"]},
+        {"title": "Segmentation and Audience Targeting", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
         {"title": "Campaign Flow Control - Filter Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "filters", "conditions", "trigger", "exit", "journey"]},
-        {"title": "Journey Testing - Troubleshooting Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408718647059-Journey-testing", "keywords": ["journey", "testing", "troubleshoot", "debug", "trigger", "not", "working"]},
-        {"title": "Campaign Execution Overview", "url": "https://help.blueshift.com/hc/en-us/articles/19600265288979-Campaign-execution-overview", "keywords": ["campaign", "execution", "troubleshoot", "trigger", "not", "sending", "issues"]},
-        {"title": "Triggered Workflows - Configuration Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4405437140115-Triggered-workflows", "keywords": ["triggered", "workflows", "configuration", "setup", "troubleshoot"]},
-        {"title": "Event Triggered Campaigns - Transaction Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360050760774-Transactions-in-event-triggered-campaigns", "keywords": ["event", "triggered", "transactions", "setup", "troubleshoot"]},
-        {"title": "Editing, Pausing and Relaunching Campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/6314649190291-Editing-Pausing-and-Relaunching-Campaigns", "keywords": ["editing", "pausing", "relaunching", "campaign", "troubleshoot", "issues"]},
-        {"title": "Campaign Alerts - Monitoring Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360047216553-Campaign-alerts", "keywords": ["campaign", "alerts", "monitoring", "troubleshoot", "not", "sending", "issues"]}
+        {"title": "Journey Testing and Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408718647059-Journey-testing", "keywords": ["journey", "testing", "troubleshoot", "debug", "trigger", "not", "working", "preview"]},
+        {"title": "Event Tracking and Integration", "url": "https://help.blueshift.com/hc/en-us/articles/360043199351-Event-tracking", "keywords": ["event", "tracking", "integration", "data", "analytics", "customer", "behavior"]},
+        {"title": "API Integration and Developer Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714493-API-integration", "keywords": ["api", "integration", "developer", "setup", "authentication", "endpoints", "documentation"]},
+        {"title": "Triggered Workflows - Configuration Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4405437140115-Triggered-workflows", "keywords": ["triggered", "workflows", "configuration", "setup", "automation", "troubleshoot"]},
+        {"title": "Campaign Performance and Analytics", "url": "https://help.blueshift.com/hc/en-us/articles/19600265288979-Campaign-execution-overview", "keywords": ["campaign", "performance", "analytics", "execution", "metrics", "reporting", "troubleshoot"]}
     ]
 
     query_lower = query.lower()

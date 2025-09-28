@@ -81,11 +81,11 @@ def call_anthropic_api(query, platform_resources=None):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
 
-        prompt = f"""You are a Blueshift support agent helping troubleshoot client issues.
+        prompt = f"""You are a Blueshift Support agent helping troubleshoot client issues.
 
 INTERNAL SUPPORT QUERY: {query}
 
-CONTEXT: This is an internal tool used BY Blueshift support to troubleshoot customer tickets, not customer-facing.
+CONTEXT: This is an internal tool used BY Blueshift support staff to troubleshoot customer tickets, not customer-facing.
 {platform_context}
 
 RESPONSE REQUIREMENTS:
@@ -94,29 +94,52 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
 ## STEP-BY-STEP PLATFORM INSTRUCTIONS
 
-MANDATORY REQUIREMENT: Extract and provide EXACT step-by-step instructions from the comprehensive platform documentation provided above. You have access to content from Help Docs, API Docs, Confluence, JIRA, and Zendesk.
+MANDATORY REQUIREMENT: You have access to content from MULTIPLE sources - Help Docs, API Docs, Confluence, JIRA tickets, and Zendesk tickets. You MUST check ALL sources for platform navigation steps.
+
+SEARCH ALL DOCUMENTATION SOURCES FOR:
+1. **HELP DOCS**: Look for articles like "Campaign Studio", "Journey Tab", "Detail Mode", "Trigger Actions"
+2. **CONFLUENCE**: Internal documentation with detailed platform workflows
+3. **JIRA TICKETS**: Engineering tickets that mention platform navigation and UI elements
+4. **ZENDESK TICKETS**: Support tickets where agents provided platform navigation steps to customers
+5. **API DOCS**: Developer documentation with platform integration steps
 
 CRITICAL INSTRUCTIONS:
-1. READ through ALL the documentation content provided above
-2. Find the sections that contain actual navigation steps, button clicks, and UI instructions
-3. Extract and format these as numbered step-by-step instructions
-4. Use EXACT terminology from the documentation (button names, menu items, field labels)
-5. Include specific navigation paths (e.g., "Go to Campaign Studio > Journey Tab > Click Add Trigger")
-6. Include any prerequisites, permissions, or setup requirements mentioned
+1. READ through ALL documentation content from ALL sources provided above
+2. Look for phrases like "Go to", "Click", "Navigate to", "Select", "Choose", "Access via"
+3. Find UI elements like "Journey Tab", "Detail Mode", "Filter Conditions", "Campaign Studio"
+4. Extract and format these as numbered step-by-step instructions
+5. Use EXACT terminology from ANY of the documentation sources
+6. Combine information from multiple sources if needed for complete steps
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
-**Steps to [task description]:**
+**Steps to check trigger filter conditions (if trigger not sending):**
 
-1. [First step with exact button/menu names from documentation]
-2. [Second step with specific navigation path from documentation]
-3. [Continue with all steps found in the documentation]
+1. Navigate to Campaign Studio → Journey Tab
+2. Switch to "Detail Mode" to view full trigger configurations
+3. Check filter criteria and delay parameters for the specific trigger
+4. [Continue with all steps found across ALL documentation sources]
+
+**What to check specifically:**
+- [List specific things to verify from documentation]
+- [Include exact field names and settings from docs]
 
 **Prerequisites:** [Any requirements mentioned in documentation]
-**Reference:** [List the specific help doc URLs that contained these steps]
+**Reference:** [List ALL sources that contained these steps - Help Docs, Confluence, JIRA, Zendesk]
 
-IF the documentation doesn't contain specific platform steps, state: "Detailed platform steps not found in available documentation. Available information: [summarize what was found]"
+EXAMPLE OF EXPECTED RESPONSE:
+Based on the Campaign Studio help documentation and internal Confluence workflows:
 
-DO NOT provide generic or assumed steps. ONLY use information directly extracted from the provided documentation content.
+**Steps to check trigger filter conditions:**
+1. Navigate to Campaign Studio → Journey Tab
+2. Switch to "Detail Mode" to see full trigger configurations
+3. Click on the specific trigger that's not sending
+4. Review filter criteria (shown in green)
+5. Check delay parameters (shown in yellow)
+6. Verify message settings (shown in blue)
+
+**Reference:** Campaign Studio help doc, Confluence workflow guide, JIRA ticket BS-1234
+
+IF documentation lacks specific platform steps, provide what's available and state which sources were checked.
 
 ## TROUBLESHOOTING GUIDANCE
 Then provide technical troubleshooting information:
@@ -563,18 +586,18 @@ def search_help_docs(query, limit=3):
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
 
-    # Updated curated list with specific step-by-step instruction URLs
+    # Updated curated list with trigger troubleshooting and detailed platform navigation URLs
     help_docs_expanded = [
-        {"title": "Campaign Studio - Step by Step Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "create", "setup", "journey", "trigger", "step", "by", "step"]},
-        {"title": "Launch the Campaign - Detailed Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4408718512531-Launch-the-Campaign", "keywords": ["launch", "campaign", "activate", "go", "live", "publish", "deploy"]},
-        {"title": "Campaign Flow Control - Navigation Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "campaign", "trigger", "journey", "exit", "conditions"]},
-        {"title": "Campaign Actions - Management Guide", "url": "https://help.blueshift.com/hc/en-us/articles/360001578393-Campaign-Actions", "keywords": ["campaign", "actions", "manage", "clone", "pause", "edit", "delete"]},
-        {"title": "Users & User Roles - Access Management", "url": "https://help.blueshift.com/hc/en-us/articles/4402644461843-Users-user-roles", "keywords": ["users", "roles", "permissions", "access", "team", "management"]},
-        {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups"]},
-        {"title": "Event Tracking Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360043199351-Event-tracking", "keywords": ["event", "tracking", "data", "analytics", "customer", "behavior"]},
-        {"title": "Integration Setup - App Hub Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/28092370413331-Amplitude", "keywords": ["integration", "app", "hub", "navigate", "setup", "connect", "external"]},
-        {"title": "Mandrill Email Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4403082287379-Mandrill-email", "keywords": ["email", "mandrill", "configuration", "setup", "smtp", "provider"]},
-        {"title": "Tips & Tricks - Platform Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/6778616627347-Tips-tricks", "keywords": ["tips", "tricks", "navigation", "platform", "best", "practices", "how", "to"]}
+        {"title": "Campaign Studio - Journey Tab & Detail Mode", "url": "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio", "keywords": ["campaign", "studio", "journey", "detail", "mode", "trigger", "troubleshoot", "filter", "conditions"]},
+        {"title": "User Journey in Campaign - Trigger Troubleshooting", "url": "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign", "keywords": ["user", "journey", "trigger", "troubleshoot", "not", "sending", "evaluation", "filter", "conditions"]},
+        {"title": "Trigger Actions - Platform Navigation", "url": "https://help.blueshift.com/hc/en-us/articles/4408725448467-Trigger-Actions", "keywords": ["trigger", "actions", "platform", "navigation", "check", "edit", "conditions"]},
+        {"title": "Campaign Flow Control - Filter Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/4408717301651-Campaign-flow-control", "keywords": ["flow", "control", "filters", "conditions", "trigger", "exit", "journey"]},
+        {"title": "Journey Testing - Troubleshooting Guide", "url": "https://help.blueshift.com/hc/en-us/articles/4408718647059-Journey-testing", "keywords": ["journey", "testing", "troubleshoot", "debug", "trigger", "not", "working"]},
+        {"title": "Campaign Execution Overview", "url": "https://help.blueshift.com/hc/en-us/articles/19600265288979-Campaign-execution-overview", "keywords": ["campaign", "execution", "troubleshoot", "trigger", "not", "sending", "issues"]},
+        {"title": "Triggered Workflows - Configuration Steps", "url": "https://help.blueshift.com/hc/en-us/articles/4405437140115-Triggered-workflows", "keywords": ["triggered", "workflows", "configuration", "setup", "troubleshoot"]},
+        {"title": "Event Triggered Campaigns - Transaction Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360050760774-Transactions-in-event-triggered-campaigns", "keywords": ["event", "triggered", "transactions", "setup", "troubleshoot"]},
+        {"title": "Editing, Pausing and Relaunching Campaigns", "url": "https://help.blueshift.com/hc/en-us/articles/6314649190291-Editing-Pausing-and-Relaunching-Campaigns", "keywords": ["editing", "pausing", "relaunching", "campaign", "troubleshoot", "issues"]},
+        {"title": "Campaign Alerts - Monitoring Setup", "url": "https://help.blueshift.com/hc/en-us/articles/360047216553-Campaign-alerts", "keywords": ["campaign", "alerts", "monitoring", "troubleshoot", "not", "sending", "issues"]}
     ]
 
     query_lower = query.lower()

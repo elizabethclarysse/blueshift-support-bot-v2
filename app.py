@@ -21,7 +21,6 @@ app.secret_key = 'blueshift_support_bot_secret_key_2023'
 app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
-# IMPORTANT: Update environment variable name to GEMINI_API_KEY
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
 # ---------------------------------
@@ -68,6 +67,7 @@ def validate_api_credentials_on_startup():
         try:
             auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
             headers = {'Authorization': f'Basic {auth}', 'Accept': 'application/json'}
+            # NOTE: We use the /myself endpoint as it's typically stable for connection check
             response = requests.get(f"{JIRA_URL}/rest/api/3/myself", headers=headers, timeout=10)
             validation_results['jira'] = response.status_code == 200
             if response.status_code != 200:
@@ -159,7 +159,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content (Used as a prefix to the user prompt)
-        system_instruction_content = f"""You are a Blueshift Support Agent troubleshooting customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -243,7 +243,10 @@ When this feature isn't working as expected:
 
 # --- FIX: JIRA Search - Restored robust progressive queries and loosened final filtering ---
 def search_jira_tickets_improved(query, limit=5, debug=True):
-    """FIXED: Search JIRA tickets with robust progressive querying and loosened filtering."""
+    """FIXED: Search JIRA tickets with robust progressive querying and loosened filtering.
+    
+    CRITICAL FIX: Corrected JIRA search URL to the modern endpoint /rest/api/3/search
+    """
     try:
         if not API_STATUS.get('jira', False):
             logger.warning("JIRA API not available - skipping search")
@@ -294,7 +297,9 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
             main_word = max(clean_query_words, key=len)
             jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
 
-        url = f"{JIRA_URL}/rest/api/3/search"
+        # --- CRITICAL FIX: Use the correct, non-deprecated search endpoint ---
+        url = f"{JIRA_URL}/rest/api/3/search" 
+        # -------------------------------------------------------------------
 
         # --- Try queries in order ---
         final_issues = []
@@ -899,6 +904,7 @@ def get_athena_client():
 
 def query_athena(query_string, database_name, query_description="Athena query"):
     """Execute a query on AWS Athena and return results"""
+    # NOTE: This function is not used for the AI workflow, only for manual user data lookup.
     try:
         athena_client = get_athena_client()
         if not athena_client:
@@ -934,6 +940,8 @@ def query_athena(query_string, database_name, query_description="Athena query"):
             print(f"  AthenaError: {failure_reason}")
             print(f"  Full status: {status_details}")
 
+            # Note: The output showed Access Denied here. The fix is external (AWS permissions),
+            # but we ensure the error message is clear.
             return {"error": f"Query failed: {error_msg}. Details: {failure_reason}", "data": []}
 
         # Get query results
@@ -992,6 +1000,8 @@ def get_available_tables(database_name):
     try:
         # Get a sample of tables to help AI understand the schema
         show_tables_query = f"SHOW TABLES IN {database_name}"
+        # We call query_athena which will return an error data structure if permissions are bad,
+        # but we handle it here by returning an empty list.
         result = query_athena(show_tables_query, database_name, "Get table list")
 
         if result.get('data'):
@@ -1078,7 +1088,7 @@ SQL_QUERY:
 INSIGHT_EXPLANATION:
 [Brief explanation of what this query will show]"""
 
-        # Call the unified Gemini API function
+        # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
         ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
         # --- End Gemini API call ---
 

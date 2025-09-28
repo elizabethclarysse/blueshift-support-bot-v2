@@ -53,8 +53,8 @@ logger.info(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
 logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
 logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
-def call_anthropic_api(query):
-    """Call Anthropic Claude API for high-quality responses"""
+def call_anthropic_api(query, platform_resources=None):
+    """Call Anthropic Claude API for high-quality responses with platform resource context"""
     try:
         headers = {
             'x-api-key': AI_API_KEY,
@@ -62,13 +62,35 @@ def call_anthropic_api(query):
             'anthropic-version': '2023-06-01'
         }
 
-        prompt = f"""You are a Blueshift internal support engineer helping other Blueshift support team members troubleshoot customer issues.
+        # Add platform resources context if available
+        platform_context = ""
+        if platform_resources and len(platform_resources) > 0:
+            platform_context = "\n\nRELEVANT PLATFORM DOCUMENTATION:\n"
+            for i, resource in enumerate(platform_resources[:3]):  # Limit to top 3 most relevant
+                platform_context += f"{i+1}. {resource['title']}\n   URL: {resource['url']}\n"
+
+        prompt = f"""You are a Blueshift Support agent helping to troubleshoot customer issues.
 
 INTERNAL SUPPORT QUERY: {query}
 
 CONTEXT: This is an internal tool used BY Blueshift support staff to troubleshoot customer tickets, not customer-facing.
+{platform_context}
 
 RESPONSE REQUIREMENTS:
+
+STRUCTURE YOUR RESPONSE AS FOLLOWS:
+
+## STEP-BY-STEP PLATFORM INSTRUCTIONS
+First, provide detailed step-by-step instructions for how to complete the requested task or configuration in the Blueshift platform. Use the relevant platform documentation above to ensure accuracy. Be very specific about:
+- Which menu/section to navigate to in the platform
+- Exact button names and field labels
+- Required settings and configurations
+- Screenshots references if applicable
+- Prerequisites or permissions needed
+- Reference the relevant help docs URLs for additional details
+
+## TROUBLESHOOTING GUIDANCE
+Then provide technical troubleshooting information:
 
 1. INTERNAL PERSPECTIVE: You are helping Blueshift support engineers, not customers. Never say "contact Blueshift support" - WE ARE the support team.
 
@@ -101,6 +123,8 @@ RESPONSE REQUIREMENTS:
        "email": "user@example.com",
        "custom_attribute": "value"
      }}'
+
+IMPORTANT: Always start with the step-by-step platform instructions, then follow with troubleshooting guidance. Be extremely specific about UI navigation and button names in the platform instructions section.
 
 NEVER suggest contacting Blueshift support - provide direct troubleshooting guidance for internal support engineers."""
 
@@ -618,27 +642,45 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
+def fetch_help_doc_content(url, max_content_length=2000):
+    """Fetch actual content from help documentation URLs to extract step-by-step instructions"""
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            # Basic content extraction - would need more sophisticated parsing for production
+            content = response.text
+            # Extract text content and limit length for AI processing
+            if len(content) > max_content_length:
+                content = content[:max_content_length] + "..."
+            return content
+        return ""
+    except Exception as e:
+        logger.error(f"Error fetching help doc content from {url}: {e}")
+        return ""
+
 def generate_related_resources(query):
     """Generate contextually relevant resources using API searches with smart fallbacks"""
     logger.info(f"Searching for resources: {query}")
 
     # Perform API searches with proper error handling
-    help_docs = search_help_docs(query, limit=3)
+    help_docs = search_help_docs(query, limit=5)  # Get more help docs for better platform instructions
     confluence_docs = search_confluence_docs(query, limit=3)
     jira_tickets = search_jira_tickets(query, limit=3)
     support_tickets = search_zendesk_tickets(query, limit=3)
-    api_docs = search_blueshift_api_docs(query, limit=3)
-
-    # No fallbacks - return only actual API results
+    api_docs = search_blueshift_api_docs(query, limit=5)  # Get more API docs
 
     logger.info(f"Resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
+
+    # For step-by-step instructions, we prioritize help docs and API docs
+    platform_resources = help_docs + api_docs
 
     return {
         'help_docs': help_docs,
         'confluence_docs': confluence_docs,
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets,
-        'api_docs': api_docs
+        'api_docs': api_docs,
+        'platform_resources': platform_resources  # Combined for AI processing
     }
 
 def get_athena_client():
@@ -991,11 +1033,11 @@ def handle_query():
         if not query:
             return jsonify({"error": "Please provide a query"})
 
-        # Call Anthropic API for high-quality response
-        ai_response = call_anthropic_api(query)
-
-        # Generate AI-powered relevant resources
+        # Generate AI-powered relevant resources first
         related_resources = generate_related_resources(query)
+
+        # Call Anthropic API for high-quality response with platform resources context
+        ai_response = call_anthropic_api(query, related_resources.get('platform_resources', []))
 
         # Generate Athena insights
         athena_insights = generate_athena_insights(query)

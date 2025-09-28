@@ -80,17 +80,18 @@ def call_anthropic_api(query, platform_resources=None):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # BALANCED PROMPT - Accurate but assertive when content is available
-        prompt = f"""You are a Blueshift Support Agent helping troubleshoot client issues.
+        prompt = f"""You are a Blueshift Support Agent helping troubleshoot customer issues.
 
 SUPPORT QUERY: {query}
 {platform_context}
 
 INSTRUCTIONS:
-1. If documentation content is provided above, USE IT to provide detailed platform navigation steps
-2. Extract specific steps, UI elements, and navigation paths from any available content
-3. If multiple sources contain relevant information, combine them for comprehensive guidance
-4. Only state "no documentation available" if there is genuinely NO content provided above
-5. When content is available, be confident in providing platform guidance based on that content
+1. You HAVE ACCESS to comprehensive Blueshift documentation - USE IT confidently
+2. If resource URLs are provided above, treat them as authoritative documentation sources
+3. Extract specific steps, UI elements, and navigation paths from available content
+4. Never state "documentation content is limited" when resources are provided
+5. Be assertive and comprehensive in providing platform guidance
+6. If you see relevant help doc URLs in the resources, reference them as complete documentation
 
 RESPONSE FORMAT - Follow this structure exactly:
 
@@ -460,21 +461,38 @@ def search_zendesk_tickets(query, limit=5):
                 'Accept': 'application/json'
             }
 
-        # Calculate date for past 2 years
+        # Calculate date for past 2 years (but make it less restrictive for testing)
         from datetime import datetime, timedelta
-        two_years_ago = datetime.now() - timedelta(days=730)
+        two_years_ago = datetime.now() - timedelta(days=1095)  # 3 years instead of 2
         date_filter = two_years_ago.strftime('%Y-%m-%d')
 
         # Search API endpoint
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
 
-        # Add date filtering to get recent tickets from past 2 years
-        response = requests.get(url, headers=headers, params={
+        # Try without date filter first, then with date filter if that fails
+        params_without_date = {
+            'query': f'({query}) type:ticket',
+            'per_page': limit,
+            'sort_by': 'updated_at',
+            'sort_order': 'desc'
+        }
+
+        params_with_date = {
             'query': f'({query}) type:ticket created>={date_filter}',
             'per_page': limit,
             'sort_by': 'updated_at',
             'sort_order': 'desc'
-        }, timeout=15)
+        }
+
+        # Try search without date filter first (broader search)
+        response = requests.get(url, headers=headers, params=params_without_date, timeout=15)
+
+        # If no results, try with date filter
+        if response.status_code == 200:
+            data = response.json()
+            if len(data.get('results', [])) == 0:
+                logger.info(f"No results without date filter, trying with date filter")
+                response = requests.get(url, headers=headers, params=params_with_date, timeout=15)
 
         if response.status_code == 200:
             data = response.json()

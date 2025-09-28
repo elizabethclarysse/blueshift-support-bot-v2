@@ -54,7 +54,7 @@ logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
 logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
 def call_anthropic_api(query, platform_resources=None):
-    """Call Anthropic Claude API with improved prompt for accuracy"""
+    """Call Anthropic Claude API with STRICT accuracy requirements"""
     try:
         headers = {
             'x-api-key': AI_API_KEY,
@@ -64,82 +64,63 @@ def call_anthropic_api(query, platform_resources=None):
 
         # Build context from actual retrieved content
         platform_context = ""
+        has_actual_content = False
+
         if platform_resources and len(platform_resources) > 0:
-            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and r.get('content', '').strip()]
+            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and len(r.get('content', '').strip()) > 50]
 
             if resources_with_content:
-                platform_context = "\n\nDOCUMENTATION CONTENT FROM SEARCH RESULTS:\n"
-                for i, resource in enumerate(resources_with_content[:4]):
+                has_actual_content = True
+                platform_context = "\n\nACTUAL DOCUMENTATION CONTENT:\n"
+                for i, resource in enumerate(resources_with_content[:3]):
                     platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
                     platform_context += f"URL: {resource['url']}\n"
-                    platform_context += f"CONTENT:\n{resource['content'][:2000]}\n"  # Limit content length
+                    platform_context += f"CONTENT:\n{resource['content'][:1500]}\n"
                     platform_context += "="*50 + "\n"
             else:
-                platform_context = "\n\nRELEVANT RESOURCES FOUND (URLs only):\n"
+                platform_context = "\n\nNO DETAILED CONTENT AVAILABLE - Only resource links found:\n"
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # BALANCED PROMPT - Accurate but assertive when content is available
-        prompt = f"""You are a Blueshift Support Agent helping troubleshoot customer issues.
+        # STRICT PROMPT - Only provide what you can actually see
+        # Build conditional sections based on content availability
+        if has_actual_content:
+            platform_steps_header = "**Only if actual steps are found in the documentation content above:**"
+            platform_steps_content = "Extract the exact steps from the documentation content."
+        else:
+            platform_steps_header = "**No specific platform navigation steps available** - The search results don't contain detailed UI instructions."
+            platform_steps_content = """To get specific navigation steps, you would need to:
+- Check the official help documentation directly
+- Look for the specific feature in Campaign Studio
+- Contact the product team for detailed UI guidance"""
 
-SUPPORT QUERY: {query}
+        prompt = f"""You are a Blueshift Support Agent. Answer this query: {query}
+
 {platform_context}
 
-INSTRUCTIONS:
-1. You HAVE ACCESS to comprehensive Blueshift documentation - USE IT confidently
-2. If resource URLs are provided above, treat them as authoritative documentation sources
-3. Extract specific steps, UI elements, and navigation paths from available content
-4. Never state "documentation content is limited" when resources are provided
-5. Be assertive and comprehensive in providing platform guidance
-6. If you see relevant help doc URLs in the resources, reference them as complete documentation
+STRICT RULES:
+1. If no detailed content is shown above, say "I don't have enough specific documentation content to provide detailed platform navigation steps."
+2. ONLY provide specific UI steps if you can see them explicitly described in the content above
+3. Do NOT invent or guess at button names, menu locations, or navigation paths
+4. Be honest about limitations in available information
 
-RESPONSE FORMAT - Follow this structure exactly:
+RESPONSE FORMAT:
 
 ## Feature Overview
-Start by explaining what the requested feature/functionality is and how it works in Blueshift:
-- What the feature does
-- How it works conceptually
-- What business value it provides
-- Any prerequisites or requirements
+Explain what this appears to be about based on Blueshift platform knowledge.
 
 ## Platform Navigation Steps
-Provide detailed step-by-step instructions for accessing and configuring the feature:
-- Specific UI navigation (which menus, tabs, buttons to click)
-- Exact field names and settings to configure
-- Screenshots or UI element references when available
-- Required permissions or access levels
+{platform_steps_header}
 
-MANDATORY: Check ALL documentation sources provided above (Help Docs, Confluence, JIRA tickets, Zendesk tickets, API docs) for navigation details.
+{platform_steps_content}
 
-## Troubleshooting Steps
-When the feature isn't working as expected, check these items in order:
-1. **Platform Configuration Issues**
-   - Verify correct settings in the UI
-   - Check required fields are populated
-   - Confirm user permissions and access levels
+## Troubleshooting Guidance
+Based on general Blueshift platform knowledge:
+- Common causes and investigation steps
+- Database queries to check in customer_campaign_logs.campaign_execution_v3
+- API endpoints or system components to examine
 
-2. **Data and Integration Issues**
-   - Check data flow and integration points
-   - Verify API connections and authentication
-   - Review data formatting and structure
-
-3. **Technical Investigation**
-   - Database queries to check execution logs
-   - Error patterns to look for in customer_campaign_logs.campaign_execution_v3
-   - API endpoints to test functionality
-   - Common error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
-
-4. **Advanced Debugging**
-   - Specific Athena queries to investigate further
-   - System components to examine
-   - Log files and monitoring to review
-
-## Internal Notes
-- Database: customer_campaign_logs.campaign_execution_v3 for error analysis
-- API Base: https://api.getblueshift.com
-- This is internal support guidance - never suggest contacting Blueshift support
-
-Remember: Be honest about what information is available vs. what you're inferring from general knowledge."""
+IMPORTANT: Be completely honest about what specific information is available versus general platform knowledge."""
 
         data = {
             'model': 'claude-3-5-sonnet-20241022',
@@ -782,30 +763,38 @@ def fetch_help_doc_content(url, max_content_length=4000):
         return ""
 
 def validate_search_results(query, results, source_name):
-    """Validate that search results are actually relevant to the query"""
+    """Much stricter validation for search results"""
     if not results:
         return []
 
     query_words = set(query.lower().split())
     validated_results = []
 
+    # Remove stop words from query for better matching
+    stop_words = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who', 'not'}
+    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 2]
+
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
 
-        # Check if result has reasonable relevance
+        # Check for meaningful word overlap (not just stop words)
         title_words = set(title.split())
-        common_words = query_words.intersection(title_words)
+        meaningful_matches = len([w for w in clean_query_words if w in title])
 
-        # Require at least some word overlap or specific Blueshift terms
-        blueshift_terms = {'campaign', 'trigger', 'blueshift', 'api', 'event', 'customer'}
-        has_blueshift_terms = any(term in title for term in blueshift_terms)
-
-        if len(common_words) > 0 or has_blueshift_terms:
+        # For trigger-related queries, require "trigger" in title or very high relevance
+        if 'trigger' in clean_query_words:
+            if 'trigger' in title or meaningful_matches >= 2:
+                validated_results.append(result)
+                logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')} (trigger match)")
+            else:
+                logger.info(f"❌ {source_name} result rejected (no trigger relevance): {result.get('title', 'Untitled')}")
+        # For other queries, require at least 2 meaningful word matches
+        elif meaningful_matches >= 2:
             validated_results.append(result)
-            logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')}")
+            logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')} ({meaningful_matches} matches)")
         else:
-            logger.info(f"❌ {source_name} result rejected (low relevance): {result.get('title', 'Untitled')}")
+            logger.info(f"❌ {source_name} result rejected (insufficient matches: {meaningful_matches}): {result.get('title', 'Untitled')}")
 
     return validated_results
 
@@ -837,24 +826,25 @@ def verify_step_extraction(query, resources_with_content):
     return found_steps
 
 def test_content_fetching():
-    """Test content fetching with actual URLs"""
+    """Test function to debug content fetching"""
     test_urls = [
         "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio",
         "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign"
     ]
 
+    print("\n=== TESTING CONTENT FETCHING ===")
     for url in test_urls:
-        print(f"\n=== Testing: {url} ===")
+        print(f"\nTesting: {url}")
         content = fetch_help_doc_content(url)
         print(f"Content length: {len(content)}")
         if content:
-            print(f"First 200 chars: {content[:200]}")
-            # Check for step indicators
-            step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open']
-            found = [indicator for indicator in step_indicators if indicator in content.lower()]
-            print(f"Step indicators found: {found}")
+            print(f"First 300 chars: {content[:300]}")
+            # Look for actual step indicators
+            step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'tab', 'mode']
+            found_indicators = [ind for ind in step_indicators if ind in content.lower()]
+            print(f"Step indicators found: {found_indicators}")
         else:
-            print("❌ No content retrieved")
+            print("❌ NO CONTENT RETRIEVED")
 
 def generate_related_resources(query):
     """Generate resources with validation and better content extraction"""

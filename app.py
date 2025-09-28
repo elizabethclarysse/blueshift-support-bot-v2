@@ -474,6 +474,10 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         
         # Returning raw results to be validated centrally in generate_related_resources_improved
         return formatted
+    
+    except Exception as e:
+        logger.error(f"Confluence search error: {e}", exc_info=True)
+        return []
 # --- END FIX ---
 
 

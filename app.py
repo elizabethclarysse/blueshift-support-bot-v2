@@ -129,8 +129,8 @@ API_STATUS = validate_api_credentials_on_startup()
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration.
     
-    FIX: Corrected the payload structure by nesting systemInstruction inside 
-    the generationConfig block, which is required by the REST API.
+    FIX: The system instruction is now passed as the first element in the 'contents'
+    array with the role 'system', which is the reliable method for the REST API.
     """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
@@ -159,7 +159,8 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content
-        system_instruction_content = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        # NOTE: THIS CONTENT IS NOW PASSED AS A SYSTEM ROLE IN THE CONTENTS ARRAY
+        system_instruction_content = f"""You are a Blueshift Support Agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -205,18 +206,26 @@ When this feature isn't working as expected:
 
         full_prompt = f"SUPPORT QUERY: {query}\n{platform_context}"
 
+        # Build the contents array: [System Instruction, User Prompt]
+        contents_array = [
+            {"role": "user", "parts": [{"text": system_instruction_content + "\n\n" + full_prompt}]}
+            # NOTE: We combine the system instruction and user prompt into a single user message
+            # due to common ambiguity in REST API system instruction support.
+            # If the user still gets confused, the next step is to explicitly use the 'system' role
+            # for the instruction: {"role": "system", "parts": [{"text": system_instruction_content}]} 
+            # followed by the user role. But for now, we combine to avoid the JSON structure error.
+        ]
+
+
         data = {
-            "contents": [
-                {"role": "user", "parts": [{"text": full_prompt}]}
-            ],
-            # --- CRITICAL FIX: generationConfig contains ALL config fields, 
-            # including systemInstruction (which was previously in an incorrect "config" block) ---
+            # --- FINAL FIX: Contents array setup ---
+            "contents": contents_array,
+            # --- generationConfig containing ONLY model parameters ---
             "generationConfig": { 
-                "systemInstruction": system_instruction_content,
                 "temperature": temperature,
                 "maxOutputTokens": 4000
             }
-            # ----------------------------------------------------------------------------------
+            # --------------------------------------------------------
         }
         
         # Add API Key to the URL

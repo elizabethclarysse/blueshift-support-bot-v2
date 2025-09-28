@@ -67,7 +67,6 @@ def validate_api_credentials_on_startup():
         try:
             auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
             headers = {'Authorization': f'Basic {auth}', 'Accept': 'application/json'}
-            # NOTE: We use the /myself endpoint as it's typically stable for connection check
             response = requests.get(f"{JIRA_URL}/rest/api/3/myself", headers=headers, timeout=10)
             validation_results['jira'] = response.status_code == 200
             if response.status_code != 200:
@@ -159,7 +158,13 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content (Used as a prefix to the user prompt)
-        system_instruction_content = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        # FIX: The temperature is set to 0.3 for the general query to reduce brittleness.
+        if platform_resources and platform_resources[0].get('content'):
+            temp = 0.3
+        else:
+            temp = temperature
+
+        system_instruction_content = f"""You are a Blueshift Support Agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -213,7 +218,7 @@ When this feature isn't working as expected:
         data = {
             "contents": contents_array,
             "generationConfig": { 
-                "temperature": temperature,
+                "temperature": temp, # Use the conditionally set temperature
                 "maxOutputTokens": 2000 # Reduced for performance
             }
         }
@@ -298,6 +303,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
             jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
 
         # --- CRITICAL FIX: Use the correct, non-deprecated search endpoint ---
+        # The endpoint should be '/rest/api/3/search' for POST requests with JQL in the body.
         url = f"{JIRA_URL}/rest/api/3/search" 
         # -------------------------------------------------------------------
 
@@ -797,13 +803,13 @@ def validate_search_results_improved(query, results, source_name):
             should_include = True
 
         # 2. Blueshift-related terms (always relevant if present)
-        platform_terms = {'blueshift', 'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'email', 'push', 'sms'}
+        platform_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'email', 'push', 'sms', 'bot', 'click', 'filtering'}
         if any(term in title for term in platform_terms):
             should_include = True
 
         # 3. Troubleshooting terms (helpful for support)
         support_terms = {'help', 'troubleshoot', 'debug', 'issue', 'problem', 'error', 'not', 'working', 'setup', 'configure'}
-        if any(term in clean_query_words for term in ['help', 'troubleshoot', 'debug', 'not', 'issue']):
+        if any(term in clean_query_words for term in ['help', 'troubleshoot', 'debug', 'not', 'issue', 'bot', 'click']):
             if any(term in title for term in support_terms):
                 should_include = True
 
@@ -833,8 +839,12 @@ def generate_related_resources_improved(query):
 
     # Perform searches with restored/improved functions
     help_docs = validate_search_results_improved(query, search_help_docs(query, limit=4), "Help Docs")
-    # Using the restored, robust functions:
-    confluence_docs = validate_search_results_improved(query, search_confluence_docs_improved(query, limit=4), "Confluence")
+    
+    # We apply validation manually on the Confluence raw results for troubleshooting,
+    # then include them all if they were found (to debug the Confluence validation step)
+    confluence_raw = search_confluence_docs_improved(query, limit=4)
+    confluence_docs = validate_search_results_improved(query, confluence_raw, "Confluence")
+
     jira_tickets = validate_search_results_improved(query, search_jira_tickets_improved(query, limit=4), "JIRA")
     support_tickets = validate_search_results_improved(query, search_zendesk_tickets_improved(query, limit=4), "Zendesk")
     api_docs = validate_search_results_improved(query, search_blueshift_api_docs(query, limit=3), "API Docs")
@@ -845,7 +855,7 @@ def generate_related_resources_improved(query):
     resources_with_content = []
 
     # Prioritize help docs and API docs for content fetching
-    priority_resources = help_docs[:2] + api_docs[:2]
+    priority_resources = help_docs[:2] + api_docs[:2] + confluence_docs[:1] # Include 1 top confluence doc
 
     # Use the improved content fetching function
     for doc in priority_resources:
@@ -856,7 +866,7 @@ def generate_related_resources_improved(query):
                     'title': doc['title'],
                     'url': doc['url'],
                     'content': content,
-                    'source': 'help_docs' if doc in help_docs else 'api_docs'
+                    'source': 'help_docs' if doc in help_docs else ('confluence' if doc in confluence_docs else 'api_docs')
                 })
                 logger.info(f"✅ Fetched content: {doc['title'][:60]}... ({len(content)} chars)")
 

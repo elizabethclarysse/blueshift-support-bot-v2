@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import time
 import base64
 import logging
+import re # Added for the BeautifulSoup fallback in content fetching
 
 # Try to load .env file if it exists (for development/testing)
 try:
@@ -53,6 +54,74 @@ logger.info(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
 logger.info(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
 logger.info(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
 
+
+# --- FIX 2: Add Credential Validation at Startup ---
+def validate_api_credentials_on_startup():
+    """Test all API credentials at startup and log results"""
+    validation_results = {}
+
+    # Test JIRA
+    if JIRA_TOKEN and JIRA_EMAIL and JIRA_URL:
+        try:
+            auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+            headers = {'Authorization': f'Basic {auth}', 'Accept': 'application/json'}
+            response = requests.get(f"{JIRA_URL}/rest/api/3/myself", headers=headers, timeout=10)
+            validation_results['jira'] = response.status_code == 200
+            if response.status_code != 200:
+                logger.error(f"JIRA validation failed: {response.status_code} - {response.text[:200]}")
+        except Exception as e:
+            validation_results['jira'] = False
+            logger.error(f"JIRA validation exception: {e}")
+    else:
+        validation_results['jira'] = False
+        logger.error("JIRA credentials missing")
+
+    # Test Confluence
+    if CONFLUENCE_TOKEN and CONFLUENCE_EMAIL and CONFLUENCE_URL:
+        try:
+            response = requests.get(
+                f"{CONFLUENCE_URL}/rest/api/user/current",
+                auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN),
+                timeout=10
+            )
+            validation_results['confluence'] = response.status_code == 200
+            if response.status_code != 200:
+                logger.error(f"Confluence validation failed: {response.status_code}")
+        except Exception as e:
+            validation_results['confluence'] = False
+            logger.error(f"Confluence validation exception: {e}")
+    else:
+        validation_results['confluence'] = False
+        logger.error("Confluence credentials missing")
+
+    # Test Zendesk
+    if ZENDESK_TOKEN and ZENDESK_EMAIL and ZENDESK_SUBDOMAIN:
+        try:
+            auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+            headers = {'Authorization': f'Basic {auth}', 'Accept': 'application/json'}
+            response = requests.get(
+                f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/users/me.json",
+                headers=headers,
+                timeout=10
+            )
+            validation_results['zendesk'] = response.status_code == 200
+            if response.status_code != 200:
+                logger.error(f"Zendesk validation failed: {response.status_code}")
+        except Exception as e:
+            validation_results['zendesk'] = False
+            logger.error(f"Zendesk validation exception: {e}")
+    else:
+        validation_results['zendesk'] = False
+        logger.error("Zendesk credentials missing")
+
+    logger.info(f"🔍 API Validation Results: {validation_results}")
+    return validation_results
+
+# Execute validation on startup
+API_STATUS = validate_api_credentials_on_startup()
+# --- END FIX 2 ---
+
+
 def call_anthropic_api(query, platform_resources=None):
     """Call Anthropic Claude API with BALANCED accuracy requirements"""
     try:
@@ -83,7 +152,7 @@ def call_anthropic_api(query, platform_resources=None):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # BALANCED PROMPT - Extract steps when available, provide general guidance when not
-        prompt = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues.
+        prompt = f"""You are a Blueshift Support Agent helping troubleshoot customer issues.
 
 SUPPORT QUERY: {query}
 {platform_context}
@@ -150,20 +219,14 @@ Remember: Combine information from the documentation with your Blueshift platfor
     except Exception as e:
         return f"Error: {str(e)}"
 
-def search_jira_tickets(query, limit=5, debug=True):
-    """Search JIRA tickets with improved relevance and stop word filtering"""
+# --- FIX 3: Simplified search_jira_tickets ---
+def search_jira_tickets_improved(query, limit=5):
+    """Simplified JIRA search with better error handling, using API_STATUS"""
+    if not API_STATUS.get('jira', False):
+        logger.warning("JIRA API not available - skipping search")
+        return []
+
     try:
-        if not JIRA_TOKEN or not JIRA_EMAIL:
-            logger.warning("JIRA credentials not configured - using fallback")
-            return []
-
-        # Same stop words as Confluence
-        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
-
-        def clean_words(words):
-            """Remove stop words and short words"""
-            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
-
         auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
         headers = {
             'Authorization': f'Basic {auth}',
@@ -171,342 +234,150 @@ def search_jira_tickets(query, limit=5, debug=True):
             'Content-Type': 'application/json'
         }
 
-        # --- Clean query words ---
-        words = query.strip().split()
-        clean_query_words = clean_words(words)
+        # Simplified JQL - just search text and summary
+        jql = f'(text ~ "{query}" OR summary ~ "{query}") ORDER BY updated DESC'
+        
+        url = f"{JIRA_URL}/rest/api/3/search"
+        payload = {
+            'jql': jql,
+            'maxResults': limit,
+            'fields': ['summary', 'key', 'status']
+        }
 
-        # If we filtered out everything, use original words
-        if not clean_query_words:
-            clean_query_words = words
-
-        logger.info(f"JIRA search - Original: '{query}' -> Clean words: {clean_query_words}")
-
-        # --- Build JQL queries progressively ---
-        jql_variants = []
-
-        # 1. Exact phrase in summary (titles are most relevant)
-        jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
-
-        # 2. Clean words AND in summary and text
-        if len(clean_query_words) > 1:
-            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
-
-        # 3. Clean words OR in summary and text
-        or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-        jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
-
-        # 4. Single most important word in summary only
-        if len(clean_query_words) > 1:
-            main_word = max(clean_query_words, key=len)
-            jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
-
-        url = f"{JIRA_URL}/rest/api/3/search/jql"
-
-        # --- Try queries in order ---
-        final_issues = []
-        for i, jql in enumerate(jql_variants):
-            try:
-                logger.info(f"Trying JIRA JQL #{i+1}: {jql}")
-
-                payload = {
-                    'jql': jql,
-                    'maxResults': limit * 3,  # Get more for filtering
-                    'fields': ['summary', 'key', 'status', 'priority', 'issuetype']
-                }
-
-                response = requests.post(url, headers=headers, json=payload, timeout=15)
-
-                if response.status_code == 200:
-                    data = response.json()
-                    issues = data.get('issues', [])
-
-                    if issues:
-                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results")
-                        final_issues = issues
-                        break
-                    else:
-                        logger.info(f"JIRA query #{i+1} returned no results")
-                else:
-                    logger.error(f"JIRA API error on query #{i+1}: {response.status_code}")
-
-            except Exception as e:
-                logger.error(f"JIRA query #{i+1} failed: {e}")
-                continue
-
-        if not final_issues:
-            logger.info("No JIRA results found with any query variant")
-            return []
-
-        # --- Debug: log raw results ---
-        if debug and final_issues:
-            logger.info("---- Raw JIRA Results ----")
-            for issue in final_issues[:10]:
-                key = issue.get('key', 'N/A')
-                summary = issue.get('fields', {}).get('summary', 'No summary')
-                status = issue.get('fields', {}).get('status', {}).get('name', 'Unknown')
-                logger.info(f"Key: {key} | Status: {status} | Summary: {summary}")
-            logger.info("---- End JIRA Results ----")
-
-        # --- Score and filter results ---
-        def score_issue(issue):
-            summary = issue.get('fields', {}).get('summary', '').lower()
-
-            # Count clean word matches in summary
-            matches = sum(1 for word in clean_query_words if word.lower() in summary)
-
-            # Bonus for exact query in summary
-            exact_bonus = 10 if query.lower() in summary else 0
-
-            # Priority bonus (higher priority = more relevant)
-            priority = issue.get('fields', {}).get('priority', {})
-            priority_name = priority.get('name', '').lower() if priority else ''
-            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
-
-            return matches * 3 + exact_bonus + priority_bonus
-
-        # Sort by relevance score
-        scored_issues = [(score_issue(issue), issue) for issue in final_issues]
-        scored_issues.sort(reverse=True, key=lambda x: x[0])
-
-        # --- Format results ---
-        results = []
-        for score, issue in scored_issues[:limit]:
-            if score > 0:  # Only include issues with some relevance
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            issues = data.get('issues', [])
+            
+            results = []
+            for issue in issues:
                 summary = issue.get('fields', {}).get('summary', 'No summary')
                 key = issue.get('key', 'Unknown')
                 results.append({
                     'title': f"{key}: {summary}",
                     'url': f"{JIRA_URL}/browse/{key}"
                 })
-
-        logger.info(f"JIRA search found {len(results)} relevant results")
-        return results
-
-    except Exception as e:
-        logger.error(f"JIRA search error: {e}")
-        return []
-
-def search_confluence_docs(query, limit=5, space_key=None, debug=True):
-    """
-    Confluence search with fixes for poor indexing:
-    - Drop stop words from queries
-    - Force OR fallback if top results have low scores
-    - Use broader field search (content, body)
-    - Progressive loosening strategy
-    """
-    try:
-        if not CONFLUENCE_TOKEN or not CONFLUENCE_EMAIL:
-            logger.warning("Confluence credentials not configured - using fallback")
-            return []
-
-        # Stop words that break Confluence CQL
-        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
-
-        def clean_words(words):
-            """Remove stop words and short words"""
-            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
-
-        def run_search(cql):
-            url = f"{CONFLUENCE_URL}/rest/api/search"
-            params = {
-                "cql": cql,
-                "limit": limit * 10,   # pull more for debugging
-                "expand": "title"
-            }
-            resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
-            resp.raise_for_status()
-            return resp.json().get("results", [])
-
-        # --- Clean query words ---
-        words = query.strip().split()
-        clean_query_words = clean_words(words)
-
-        # If we filtered out everything, use original words
-        if not clean_query_words:
-            clean_query_words = words
-
-        logger.info(f"Original query: '{query}' -> Clean words: {clean_query_words}")
-
-        # --- Build queries progressively ---
-        cql_variants = []
-
-        # 1. Exact phrase (standard fields)
-        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
-
-        # 2. Clean words AND (standard fields)
-        if len(clean_query_words) > 1:
-            and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            cql_variants.append(" AND ".join(and_parts))
-
-        # 3. Clean words OR (standard fields)
-        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-        cql_variants.append(" OR ".join(or_parts))
-
-        # 4. Single most important word (if we have multiple)
-        if len(clean_query_words) > 1:
-            # Use longest word as most likely to be significant
-            main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
-
-        # 5. Very broad fallback - just search for any word
-        if clean_query_words:
-            # Pick the most specific word (longest) and search broadly
-            main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'text ~ "{main_word}"')
-
-        # Add space filter if provided
-        if space_key:
-            cql_variants = [f'space.key = "{space_key}" AND ({c})' for c in cql_variants]
-
-        # --- Try queries in order, with score quality check ---
-        final_results = []
-        for i, cql in enumerate(cql_variants):
-            try:
-                logger.info(f"Trying Confluence CQL #{i+1}: {cql}")
-                results = run_search(cql)
-
-                if results:
-                    top_score = max(r.get("score", 0) for r in results[:3])
-                    logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
-
-                    # If we got decent results (score > 1) or this is our last attempt, use them
-                    if top_score > 1 or i == len(cql_variants) - 1:
-                        final_results = results
-                        logger.info(f"Using results from query #{i+1}")
-                        break
-                    else:
-                        logger.info(f"Top score {top_score} too low, trying next query...")
-
-            except Exception as e:
-                logger.error(f"Confluence query #{i+1} failed: {e}", exc_info=True)
-                continue
-
-        # --- Debug: log top 10 raw results ---
-        if debug and final_results:
-            logger.info("---- Raw Confluence Results ----")
-            for r in final_results[:10]:
-                page_id = r.get("content", {}).get("id")
-                title = r.get("title") or "Untitled"
-                score = r.get("score", 0)
-                url = f"{CONFLUENCE_URL}/pages/{page_id}" if page_id else "N/A"
-                logger.info(f"Title: {title} | Score: {score} | URL: {url}")
-            logger.info("---- End Raw Results ----")
-
-        # --- Re-rank: trust API score, tiny title nudge ---
-        def score_fn(r):
-            api_score = r.get("score", 0) or 0
-            title = (r.get("title") or "").lower()
-
-            # Check if any clean words appear in title
-            title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
-            boost = title_word_matches * 5  # Small boost per matching word
-
-            return api_score * 100 + boost
-
-        ranked = sorted(final_results, key=score_fn, reverse=True)
-
-        # --- Format results ---
-        formatted = []
-        for r in ranked[:limit]:
-            page_id = r.get("content", {}).get("id")
-            title = r.get("title") or "Untitled"
-            if not page_id:
-                continue
-            # Try multiple URL formats for Confluence page access
-            page_url_options = [
-                f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}",
-                f"{CONFLUENCE_URL}/display/~{page_id}",
-                f"{CONFLUENCE_URL}/pages/{page_id}",
-                f"https://blueshift.atlassian.net/wiki/spaces/~{page_id}"
-            ]
-            # Use the first format (most common)
-            page_url = page_url_options[0]
-            formatted.append({"title": title, "url": page_url})
-
-        logger.info(f"Confluence search found {len(formatted)} results")
-        return formatted
-
-    except Exception as e:
-        logger.error(f"Confluence search error: {e}", exc_info=True)
-        return []
-
-def search_zendesk_tickets(query, limit=5):
-    """Search Zendesk tickets using API with improved error handling and recent date filtering"""
-    try:
-        if not ZENDESK_TOKEN or not ZENDESK_SUBDOMAIN:
-            logger.warning("Zendesk credentials not configured - using fallback")
-            return []
-
-        # Try Basic Auth with email/token combination first
-        if ZENDESK_EMAIL:
-            auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
-            headers = {
-                'Authorization': f'Basic {auth}',
-                'Accept': 'application/json'
-            }
+            
+            logger.info(f"JIRA search returned {len(results)} results for '{query}'")
+            return results
         else:
-            # Fallback to Bearer token
-            headers = {
-                'Authorization': f'Bearer {ZENDESK_TOKEN}',
-                'Accept': 'application/json'
-            }
+            logger.error(f"JIRA search failed: {response.status_code} - {response.text[:200]}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"JIRA search exception: {e}")
+        return []
+# --- END FIX 3 ---
 
-        # Calculate date for past 2 years (but make it less restrictive for testing)
-        from datetime import datetime, timedelta
-        two_years_ago = datetime.now() - timedelta(days=1095)  # 3 years instead of 2
-        date_filter = two_years_ago.strftime('%Y-%m-%d')
+# --- FIX 3: Simplified search_confluence_docs ---
+def search_confluence_docs_improved(query, limit=5):
+    """Simplified Confluence search, using API_STATUS"""
+    if not API_STATUS.get('confluence', False):
+        logger.warning("Confluence API not available - skipping search")
+        return []
 
-        # Search API endpoint
+    try:
+        # Simple CQL search
+        cql = f'text ~ "{query}" OR title ~ "{query}"'
+        
+        url = f"{CONFLUENCE_URL}/rest/api/content/search"
+        params = {
+            "cql": cql,
+            "limit": limit,
+            "expand": "content"
+        }
+        
+        response = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            
+            for item in data.get("results", []):
+                title = item.get("title", "Untitled")
+                content = item.get("content", {})
+                page_id = content.get("id")
+                
+                if page_id:
+                    # Use the most reliable URL format
+                    page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+                    results.append({
+                        "title": title,
+                        "url": page_url
+                    })
+            
+            logger.info(f"Confluence search returned {len(results)} results for '{query}'")
+            return results
+        else:
+            logger.error(f"Confluence search failed: {response.status_code} - {response.text[:200]}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"Confluence search exception: {e}")
+        return []
+# --- END FIX 3 ---
+
+# --- FIX 3: Simplified search_zendesk_tickets ---
+def search_zendesk_tickets_improved(query, limit=5):
+    """Simplified Zendesk search, using API_STATUS"""
+    if not API_STATUS.get('zendesk', False):
+        logger.warning("Zendesk API not available - skipping search")
+        return []
+
+    try:
+        # Assuming token auth is used via ZENDESK_EMAIL/token
+        auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+        headers = {
+            'Authorization': f'Basic {auth}',
+            'Accept': 'application/json'
+        }
+
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
-
-        # Try without date filter first, then with date filter if that fails
-        params_without_date = {
+        params = {
             'query': f'({query}) type:ticket',
             'per_page': limit,
             'sort_by': 'updated_at',
             'sort_order': 'desc'
         }
 
-        params_with_date = {
-            'query': f'({query}) type:ticket created>={date_filter}',
-            'per_page': limit,
-            'sort_by': 'updated_at',
-            'sort_order': 'desc'
-        }
-
-        # Try search without date filter first (broader search)
-        response = requests.get(url, headers=headers, params=params_without_date, timeout=15)
-
-        # If no results, try with date filter
-        if response.status_code == 200:
-            data = response.json()
-            if len(data.get('results', [])) == 0:
-                logger.info(f"No results without date filter, trying with date filter")
-                response = requests.get(url, headers=headers, params=params_with_date, timeout=15)
+        response = requests.get(url, headers=headers, params=params, timeout=20)
 
         if response.status_code == 200:
             data = response.json()
             results = []
-            for ticket in data.get('results', [])[:limit]:
+            
+            for ticket in data.get('results', []):
+                subject = ticket.get('subject', 'No Subject')
+                ticket_id = ticket.get('id')
+                
                 results.append({
-                    'title': f"Ticket #{ticket['id']}: {ticket.get('subject', 'No Subject')}",
-                    'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket['id']}"
+                    'title': f"Ticket #{ticket_id}: {subject}",
+                    'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket_id}"
                 })
-            logger.info(f"Zendesk search found {len(results)} results")
+            
+            logger.info(f"Zendesk search returned {len(results)} results for '{query}'")
             return results
         else:
-            logger.error(f"Zendesk API error: {response.status_code} - {response.text[:200]}")
+            logger.error(f"Zendesk search failed: {response.status_code} - {response.text[:200]}")
+            return []
+            
     except Exception as e:
-        logger.error(f"Zendesk search error: {e}")
+        logger.error(f"Zendesk search exception: {e}")
+        return []
+# --- END FIX 3 ---
 
-    return []
 
 def search_help_docs(query, limit=3):
     """IMPROVED help docs search with better trigger/mobile coverage"""
+    # NOTE: This function is kept largely the same as it uses an internal-only logic
+    # that is not easily simplified, but it does rely on Zendesk credentials.
+    # The Zendesk API search part is now implicitly handled by API_STATUS being checked
+    # in the Zendesk ticket search. For now, we'll keep the curated list logic.
     try:
-        # Try API search first
-        if ZENDESK_SUBDOMAIN and ZENDESK_TOKEN:
+        # Try API search first (moved to use same API_STATUS check logic if possible)
+        if ZENDESK_SUBDOMAIN and ZENDESK_TOKEN and API_STATUS.get('zendesk', False):
+            # ... (rest of the Zendesk API logic is correct but redundant if API_STATUS is False)
             if ZENDESK_EMAIL:
                 auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
                 headers = {
@@ -537,6 +408,8 @@ def search_help_docs(query, limit=3):
                 if results:
                     logger.info(f"Help Center API found {len(results)} results")
                     return results[:limit]
+            else:
+                 logger.warning(f"Zendesk Help Center API failed: {response.status_code}")
 
     except Exception as e:
         logger.error(f"Help Center API search error: {e}")
@@ -613,9 +486,6 @@ def search_help_docs(query, limit=3):
 def search_blueshift_api_docs(query, limit=3):
     """Search Blueshift API documentation"""
     try:
-        # Use WebFetch to get relevant API documentation
-        import requests
-
         # Search the main API reference page with working endpoint URLs
         api_docs = [
             {"title": "Blueshift API Documentation - Overview", "url": "https://developer.blueshift.com/reference/welcome", "keywords": ["api", "developer", "documentation", "reference", "guide", "overview"]},
@@ -667,14 +537,14 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
-def fetch_help_doc_content(url, max_content_length=4000):
-    """Improved content fetching focused on extracting actual instructions"""
+# --- FIX 4: Robust fetch_help_doc_content with BeautifulSoup Fallback ---
+def fetch_help_doc_content_improved(url, max_content_length=2000):
+    """Improved content fetching with fallback for missing BeautifulSoup"""
     try:
         logger.info(f"Fetching content from: {url}")
 
-        # Add headers to avoid blocking
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
         response = requests.get(url, timeout=15, headers=headers)
@@ -684,142 +554,113 @@ def fetch_help_doc_content(url, max_content_length=4000):
 
         try:
             from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove unwanted elements
+            for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form']):
+                tag.decompose()
+
+            # Find main content using common selectors
+            main_content = soup.select_one('article .article-body') or soup.select_one('.article-content') or soup.find('article') or soup.body or soup
+            
+            # Extract text with structure
+            text_content = ""
+            for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li']):
+                text = element.get_text(strip=True)
+                if text and len(text) > 15:
+                    if element.name.startswith('h'):
+                        text_content += f"\n[HEADING] {text}\n"
+                    else:
+                        text_content += f"{text}\n"
+            
+            clean_content = '\n'.join([line.strip() for line in text_content.split('\n') if line.strip()])
+            
+            if len(clean_content) > max_content_length:
+                clean_content = clean_content[:max_content_length] + "...[truncated]"
+            
+            logger.info(f"Successfully extracted {len(clean_content)} characters using BeautifulSoup")
+            return clean_content
+            
         except ImportError:
-            logger.error("BeautifulSoup not installed. Install with: pip install beautifulsoup4")
-            return ""
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Remove unwanted elements
-        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form']):
-            tag.decompose()
-
-        # Try multiple content selectors in order of preference
-        content_selectors = [
-            'article .article-body',  # Zendesk help center
-            '.article-content',
-            '.help-center-article',
-            'article',
-            '.content',
-            '.main-content',
-            'main .body',
-            '.post-content',
-            '#content',
-            '.entry-content'
-        ]
-
-        main_content = None
-        for selector in content_selectors:
-            main_content = soup.select_one(selector)
-            if main_content:
-                logger.info(f"Found content using selector: {selector}")
-                break
-
-        if not main_content:
-            # Fallback to body
-            main_content = soup.body if soup.body else soup
-            logger.info("Using fallback body content")
-
-        # Enhanced text extraction to preserve step-by-step structure
-        step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'open', 'choose', 'tab', 'mode', 'view', 'add', 'configure']
-
-        text_content = ""
-
-        # First, try to extract ordered/unordered lists which often contain steps
-        lists = main_content.find_all(['ol', 'ul'])
-        for list_elem in lists:
-            list_items = list_elem.find_all('li')
-            if list_items:
-                text_content += "\n[STEP LIST]\n"
-                for i, item in enumerate(list_items, 1):
-                    text = item.get_text(strip=True)
-                    if text:
-                        text_content += f"{i}. {text}\n"
-                text_content += "[END STEP LIST]\n\n"
-
-        # Then extract headings and paragraphs with structure preservation
-        for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div']):
-            text = element.get_text(strip=True)
-            if text and len(text) > 15:  # Ignore very short text
-
-                # Mark headings clearly
-                if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                    text_content += f"\n[HEADING] {text}\n"
-
-                # Prioritize content that looks like instructions
-                elif any(indicator in text.lower() for indicator in step_indicators):
-                    text_content += f"\n[INSTRUCTION] {text}\n"
-
-                # Regular content
-                else:
-                    text_content += f"{text}\n"
-
-        # Clean up and limit length
-        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-        clean_content = '\n'.join(lines)
-
-        if len(clean_content) > max_content_length:
-            clean_content = clean_content[:max_content_length] + "\n...[Content truncated]"
-
-        logger.info(f"Extracted {len(clean_content)} characters from {url}")
-        return clean_content
+            # Fallback: simple text extraction without BeautifulSoup
+            logger.warning("BeautifulSoup not available - using simple text extraction")
+            
+            # Basic HTML stripping (not perfect but functional)
+            text = response.text
+            
+            # Remove scripts and styles
+            text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+            
+            # Remove HTML tags
+            text = re.sub(r'<[^>]+>', ' ', text)
+            
+            # Clean up whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            if len(text) > max_content_length:
+                text = text[:max_content_length] + "...[truncated]"
+            
+            logger.info(f"Fallback extraction: {len(text)} characters")
+            return text
 
     except Exception as e:
         logger.error(f"Error fetching content from {url}: {e}")
         return ""
+# --- END FIX 4 ---
 
-def validate_search_results(query, results, source_name):
-    """FIXED - More balanced validation that doesn't reject everything"""
+# --- FIX 1: Improved Validation Logic ---
+def validate_search_results_improved(query, results, source_name):
+    """Much more lenient validation focused on actual relevance"""
     if not results:
         return []
 
-    query_words = set(query.lower().split())
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
     validated_results = []
 
-    # Remove stop words but be less aggressive
-    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+    # Remove only the most basic stop words
+    stop_words = {'the', 'a', 'an', 'and', 'or'}
     clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
 
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
 
-        # Check for meaningful word overlap
-        title_words = set(title.split())
-        meaningful_matches = len([w for w in clean_query_words if w in title])
-
-        # MUCH MORE LENIENT validation criteria
+        # MUCH MORE LENIENT criteria
         should_include = False
 
-        # Include if ANY meaningful word matches
-        if meaningful_matches >= 1:
+        # 1. ANY word match in title (must be a clean word)
+        if any(word in title for word in clean_query_words):
             should_include = True
 
-        # Include if contains Blueshift-related terms
-        blueshift_terms = {'campaign', 'trigger', 'blueshift', 'api', 'event', 'customer', 'journey', 'studio', 'message'}
-        if any(term in title for term in blueshift_terms):
+        # 2. Blueshift-related terms (always relevant if present)
+        platform_terms = {'blueshift', 'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'email', 'push', 'sms'}
+        if any(term in title for term in platform_terms):
             should_include = True
 
-        # For trigger queries, be extra inclusive
-        if 'trigger' in clean_query_words and 'trigger' in title:
-            should_include = True
-
-        # For troubleshooting queries, include anything with troubleshooting terms
-        troubleshooting_terms = {'troubleshoot', 'debug', 'not', 'working', 'issue', 'problem', 'help'}
-        if any(term in clean_query_words for term in ['not', 'troubleshoot', 'debug', 'help']):
-            if any(term in title for term in troubleshooting_terms):
+        # 3. Troubleshooting terms (helpful for support)
+        support_terms = {'help', 'troubleshoot', 'debug', 'issue', 'problem', 'error', 'not', 'working', 'setup', 'configure'}
+        if any(term in clean_query_words for term in ['help', 'troubleshoot', 'debug', 'not', 'issue']):
+            if any(term in title for term in support_terms):
                 should_include = True
 
-        if should_include:
-            validated_results.append(result)
-            logger.info(f"✅ {source_name} result validated: {result.get('title', 'Untitled')} ({meaningful_matches} matches)")
-        else:
-            logger.info(f"❌ {source_name} result rejected: {result.get('title', 'Untitled')}")
+        # 4. If we have very few results, be even more lenient
+        if len(results) <= 2:
+            should_include = True
 
+        if should_include and url:  # Must have valid URL
+            validated_results.append(result)
+            logger.info(f"✅ {source_name} - Included: {result.get('title', 'Untitled')[:60]}...")
+        else:
+            logger.info(f"❌ {source_name} - Excluded: {result.get('title', 'Untitled')[:60]}...")
+            
+    logger.info(f"{source_name} validation: {len(results)} → {len(validated_results)} results")
     return validated_results
+# --- END FIX 1 ---
 
 def verify_step_extraction(query, resources_with_content):
-    """Verify if actual step-by-step instructions exist in the content"""
+    """Verify if actual step-by-step instructions exist in the content (kept for completeness)"""
     step_indicators = [
         'step 1', 'step 2', '1.', '2.', '3.',
         'navigate to', 'click on', 'go to', 'select',
@@ -846,114 +687,64 @@ def verify_step_extraction(query, resources_with_content):
     return found_steps
 
 def test_content_fetching():
-    """Test function to debug content fetching"""
-    test_urls = [
-        "https://help.blueshift.com/hc/en-us/articles/4408704180499-Campaign-studio",
-        "https://help.blueshift.com/hc/en-us/articles/4408704006675-User-journey-in-a-campaign"
-    ]
+    """Test function to debug content fetching (removed from main execution)"""
+    pass
 
-    print("\n=== TESTING CONTENT FETCHING ===")
-    for url in test_urls:
-        print(f"\nTesting: {url}")
-        content = fetch_help_doc_content(url)
-        print(f"Content length: {len(content)}")
-        if content:
-            print(f"First 300 chars: {content[:300]}")
-            # Look for actual step indicators
-            step_indicators = ['step', 'navigate', 'click', 'select', 'go to', 'tab', 'mode']
-            found_indicators = [ind for ind in step_indicators if ind in content.lower()]
-            print(f"Step indicators found: {found_indicators}")
-        else:
-            print("❌ NO CONTENT RETRIEVED")
+# --- FIX 5: Update Main Resource Generation Function ---
+def generate_related_resources_improved(query):
+    """Improved resource generation with better validation and search calls"""
+    logger.info(f"🔍 Searching for resources: '{query}'")
 
-def generate_related_resources(query):
-    """Generate resources with validation and better content extraction"""
-    logger.info(f"Searching for resources: {query}")
+    # Perform searches with improved functions
+    help_docs = validate_search_results_improved(query, search_help_docs(query, limit=4), "Help Docs")
+    confluence_docs = validate_search_results_improved(query, search_confluence_docs_improved(query, limit=4), "Confluence")
+    jira_tickets = validate_search_results_improved(query, search_jira_tickets_improved(query, limit=4), "JIRA")
+    support_tickets = validate_search_results_improved(query, search_zendesk_tickets_improved(query, limit=4), "Zendesk")
+    api_docs = validate_search_results_improved(query, search_blueshift_api_docs(query, limit=3), "API Docs")
 
-    # Perform searches
-    help_docs = validate_search_results(query, search_help_docs(query, limit=3), "Help Docs")
-    confluence_docs = validate_search_results(query, search_confluence_docs(query, limit=3), "Confluence")
-    jira_tickets = validate_search_results(query, search_jira_tickets(query, limit=3), "JIRA")
-    support_tickets = validate_search_results(query, search_zendesk_tickets(query, limit=3), "Zendesk")
-    api_docs = validate_search_results(query, search_blueshift_api_docs(query, limit=2), "API Docs")
+    logger.info(f"📊 Final counts: Help={len(help_docs)}, Confluence={len(confluence_docs)}, JIRA={len(jira_tickets)}, Zendesk={len(support_tickets)}, API={len(api_docs)}")
 
-    logger.info(f"Validated resource counts: help={len(help_docs)}, confluence={len(confluence_docs)}, jira={len(jira_tickets)}, zendesk={len(support_tickets)}, api_docs={len(api_docs)}")
-
-    # Fetch content from ALL sources that might contain platform steps
+    # Fetch content from top results
     resources_with_content = []
 
-    # 1. Help docs - usually have the best step-by-step instructions
-    for doc in help_docs[:2]:  # Top 2 help docs
-        content = fetch_help_doc_content(doc['url'])
-        if content and len(content.strip()) > 100:
-            resources_with_content.append({
-                'title': doc['title'],
-                'url': doc['url'],
-                'content': content,
-                'source': 'help_docs'
-            })
-            logger.info(f"✅ Successfully fetched help doc content: {doc['title']}")
+    # Prioritize help docs and API docs for content fetching
+    priority_resources = help_docs[:2] + api_docs[:2]
 
-    # 2. API docs - for technical integration steps
-    for doc in api_docs[:2]:  # Top 2 API docs
-        content = fetch_help_doc_content(doc['url'])
-        if content and len(content.strip()) > 100:
-            resources_with_content.append({
-                'title': doc['title'],
-                'url': doc['url'],
-                'content': content,
-                'source': 'api_docs'
-            })
-            logger.info(f"✅ Successfully fetched API doc content: {doc['title']}")
-
-    # 3. Confluence docs - internal documentation may have detailed platform steps
-    for doc in confluence_docs[:2]:  # Top 2 Confluence docs
+    # Use the improved content fetching function
+    for doc in priority_resources:
         if doc.get('url'):
-            content = fetch_help_doc_content(doc['url'])
-            if content and len(content.strip()) > 100:
+            content = fetch_help_doc_content_improved(doc['url'])
+            if content and len(content.strip()) > 50:  # Must have meaningful content
                 resources_with_content.append({
                     'title': doc['title'],
                     'url': doc['url'],
                     'content': content,
-                    'source': 'confluence'
+                    'source': 'help_docs' if doc in help_docs else 'api_docs'
                 })
-                logger.info(f"✅ Successfully fetched Confluence content: {doc['title']}")
+                logger.info(f"✅ Fetched content: {doc['title'][:60]}... ({len(content)} chars)")
 
-    # 4. JIRA tickets - may contain platform navigation details from engineering
+    # Add JIRA and Zendesk details without full fetch
     for ticket in jira_tickets[:2]:
         if ticket.get('url'):
-            # For JIRA tickets, include more detailed summary since they often have step-by-step details
-            ticket_content = f"JIRA Ticket: {ticket['title']}\n"
-            if 'description' in ticket:
-                ticket_content += f"Description: {ticket['description'][:500]}\n"
-            ticket_content += f"This engineering ticket may contain platform navigation steps or UI element references."
-
+            ticket_content = f"JIRA Ticket: {ticket['title']}\nThis engineering ticket may contain platform navigation steps or UI element references."
             resources_with_content.append({
                 'title': ticket['title'],
                 'url': ticket['url'],
                 'content': ticket_content,
                 'source': 'jira'
             })
-            logger.info(f"✅ Added JIRA ticket details: {ticket['title']}")
 
-    # 5. Support tickets - agents may have provided step-by-step instructions to customers
     for ticket in support_tickets[:2]:
         if ticket.get('url'):
-            # For Zendesk tickets, include more context since support agents often provide steps
-            ticket_content = f"Support Ticket: {ticket['title']}\n"
-            if 'description' in ticket:
-                ticket_content += f"Issue: {ticket['description'][:500]}\n"
-            ticket_content += f"This support ticket may contain step-by-step platform navigation instructions provided by agents."
-
+            ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
             resources_with_content.append({
                 'title': ticket['title'],
                 'url': ticket['url'],
                 'content': ticket_content,
                 'source': 'zendesk'
             })
-            logger.info(f"✅ Added Zendesk ticket details: {ticket['title']}")
 
-    logger.info(f"Final content-rich resources: {len(resources_with_content)}")
+    logger.info(f"📄 Resources with content: {len(resources_with_content)}")
 
     return {
         'help_docs': help_docs,
@@ -961,9 +752,10 @@ def generate_related_resources(query):
         'jira_tickets': jira_tickets,
         'support_tickets': support_tickets,
         'api_docs': api_docs,
-        'platform_resources': help_docs + api_docs,
+        # 'platform_resources' is no longer explicitly created but the total validated set is available
         'platform_resources_with_content': resources_with_content
     }
+# --- END FIX 5 ---
 
 def get_athena_client():
     """Initialize AWS Athena client"""
@@ -1047,7 +839,7 @@ def customize_query_for_execution(sql_query, user_query):
 
     # Replace generic UUIDs with real ones
     customized = sql_query.replace('uuid-value', real_account_uuid)
-    customized = customized.replace('account_uuid = \'uuid-value\'', f'account_uuid = \'{real_account_uuid}\'')
+    customized = customized.replace('account_uuid = \'your_account_uuid\'', f'account_uuid = \'{real_account_uuid}\'')
 
     # Use more recent dates that are likely to have data
     import datetime
@@ -1288,6 +1080,7 @@ def index():
 def favicon():
     """Serve the Blueshift favicon"""
     try:
+        # Use send_file to correctly serve the file
         return send_file('blueshift-favicon.png', mimetype='image/png')
     except Exception as e:
         logger.error(f"Error serving favicon: {e}")
@@ -1318,8 +1111,10 @@ def handle_query():
         # DEBUG: Log the query
         logger.info(f"Processing query: {query}")
 
-        # Generate resources with validation
-        related_resources = generate_related_resources(query)
+        # --- UPDATE FUNCTION CALL ---
+        # Call improved resource generation function
+        related_resources = generate_related_resources_improved(query)
+        # --- END UPDATE ---
 
         # DEBUG: Log what content was actually retrieved
         platform_resources_with_content = related_resources.get('platform_resources_with_content', [])
@@ -1862,6 +1657,16 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
+            <div class="followup-section">
+                <h4>Have a follow-up question?</h4>
+                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
+                <div class="followup-container">
+                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
+                    <button id="followupBtn">Ask</button>
+                </div>
+                <div id="followupResponse" class="followup-response"></div>
+            </div>
+
             <div id="athenaSection" class="athena-section" style="display: none;">
                 <h3>📊 Suggested Query <span class="athena-badge">ATHENA</span></h3>
                 <p><strong>Database:</strong> <span id="athenaDatabase" style="font-family: monospace; background: #f0f0f0; padding: 2px 6px; border-radius: 4px;"></span></p>
@@ -1873,16 +1678,6 @@ MAIN_TEMPLATE = '''
                     <textarea id="suggestedQuery" class="sql-query" style="width: 100%; height: 120px; margin-top: 5px; font-family: 'Courier New', monospace; font-size: 12px; border: 2px solid #2790FF; border-radius: 8px; padding: 10px;" readonly placeholder="SQL query suggestion will appear here..."></textarea>
                     <p style="margin-top: 10px; color: #666; font-size: 0.9em;">💡 <strong>Instructions:</strong> Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.</p>
                 </div>
-            </div>
-
-            <div class="followup-section">
-                <h4>Have a follow-up question?</h4>
-                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
-                <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
-                    <button id="followupBtn">Ask</button>
-                </div>
-                <div id="followupResponse" class="followup-response"></div>
             </div>
 
             <div class="sources-section">
@@ -2105,6 +1900,12 @@ if __name__ == '__main__':
     print(f"ZENDESK_TOKEN: {'✅ Configured' if ZENDESK_TOKEN else '❌ Not set'}")
     print(f"ZENDESK_EMAIL: {'✅ Configured' if ZENDESK_EMAIL else '❌ Not set'}")
     print(f"ZENDESK_SUBDOMAIN: {'✅ Configured' if ZENDESK_SUBDOMAIN else '❌ Not set'}")
+    print("=" * 40)
+    
+    # Print API status results
+    print("\n=== External API Status ===")
+    for api, status in API_STATUS.items():
+        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
     print("=" * 40)
 
     app.run(host='0.0.0.0', port=port, debug=True)

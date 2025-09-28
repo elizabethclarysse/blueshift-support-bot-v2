@@ -127,7 +127,11 @@ API_STATUS = validate_api_credentials_on_startup()
 
 # --- REPLACEMENT FOR call_anthropic_api, WITH GENERATION CONFIG FIX ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
-    """Call Google Gemini API with system context and configuration."""
+    """Call Google Gemini API with system context and configuration.
+    
+    FIX: Corrected the payload structure by nesting systemInstruction inside 
+    the generationConfig block, which is required by the REST API.
+    """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
 
@@ -154,8 +158,8 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # System Instruction for Gemini
-        system_instruction = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        # System Instruction content
+        system_instruction_content = f"""You are a Blueshift Support Agent helping to troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -205,13 +209,14 @@ When this feature isn't working as expected:
             "contents": [
                 {"role": "user", "parts": [{"text": full_prompt}]}
             ],
-            # --- CRITICAL FIX: Changed "config" to "generationConfig" ---
+            # --- CRITICAL FIX: generationConfig contains ALL config fields, 
+            # including systemInstruction (which was previously in an incorrect "config" block) ---
             "generationConfig": { 
-                "systemInstruction": system_instruction,
+                "systemInstruction": system_instruction_content,
                 "temperature": temperature,
                 "maxOutputTokens": 4000
             }
-            # -----------------------------------------------------------
+            # ----------------------------------------------------------------------------------
         }
         
         # Add API Key to the URL

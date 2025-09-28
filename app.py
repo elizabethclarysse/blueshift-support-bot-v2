@@ -128,7 +128,7 @@ API_STATUS = validate_api_credentials_on_startup()
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration.
     
-    FIX: Increased temperature to 0.3 for main queries to prevent early conversational stop.
+    CRITICAL FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
     """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
@@ -163,7 +163,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are a Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -219,7 +219,7 @@ When this feature isn't working as expected:
             "contents": contents_array,
             "generationConfig": { 
                 "temperature": temp, 
-                "maxOutputTokens": 2000 
+                "maxOutputTokens": 4000  # CRITICAL FIX APPLIED HERE
             }
         }
         

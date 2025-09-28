@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import time
 import base64
 import logging
-import re # Added for the BeautifulSoup fallback in content fetching
+import re 
 
 # Try to load .env file if it exists (for development/testing)
 try:
@@ -20,8 +20,11 @@ app = Flask(__name__)
 app.secret_key = 'blueshift_support_bot_secret_key_2023'
 app.permanent_session_lifetime = timedelta(hours=12)
 
-# Use the correct Claude API key
-AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
+# --- GEMINI API CONFIGURATION ---
+# IMPORTANT: Update environment variable name to GEMINI_API_KEY
+AI_API_KEY = os.environ.get('GEMINI_API_KEY')
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+# ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
 ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
@@ -122,24 +125,24 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-def call_anthropic_api(query, platform_resources=None):
-    """Call Anthropic Claude API with BALANCED accuracy requirements"""
+# --- REPLACEMENT FOR call_anthropic_api ---
+def call_gemini_api(query, platform_resources=None, temperature=0.2):
+    """Call Google Gemini API with system context and configuration."""
+    if not AI_API_KEY:
+        return "Error: GEMINI_API_KEY is not configured."
+
     try:
         headers = {
-            'x-api-key': AI_API_KEY,
             'Content-Type': 'application/json',
-            'anthropic-version': '2023-06-01'
         }
-
+        
         # Build context from actual retrieved content
         platform_context = ""
-        has_actual_content = False
 
         if platform_resources and len(platform_resources) > 0:
             resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and len(r.get('content', '').strip()) > 50]
 
             if resources_with_content:
-                has_actual_content = True
                 platform_context = "\n\nDOCUMENTATION CONTENT FROM SEARCH RESULTS:\n"
                 for i, resource in enumerate(resources_with_content[:4]):
                     platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
@@ -151,14 +154,11 @@ def call_anthropic_api(query, platform_resources=None):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # BALANCED PROMPT - Extract steps when available, provide general guidance when not
-        prompt = f"""You are a Blueshift Support Agent helping troubleshoot customer issues.
-
-SUPPORT QUERY: {query}
-{platform_context}
+        # System Instruction for Gemini
+        system_instruction = f"""You are a Blueshift Support agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
-1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content above.
+1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
 2. If documentation content contains step-by-step instructions, use them precisely.
 3. If no specific steps in docs, provide general navigation based on Blueshift platform knowledge.
 4. Combine documentation steps with your Blueshift platform knowledge for comprehensive guidance.
@@ -197,30 +197,45 @@ When this feature isn't working as expected:
 - Main troubleshooting database: customer_campaign_logs.campaign_execution_v3
 - API Base: https://api.getblueshift.com
 - This is internal support guidance - provide actionable troubleshooting steps
+"""
 
-Remember: Combine information from the documentation with your Blueshift platform knowledge to provide comprehensive, actionable guidance."""
+        full_prompt = f"SUPPORT QUERY: {query}\n{platform_context}"
 
         data = {
-            'model': 'claude-3-5-sonnet-20241022',
-            'max_tokens': 2000,
-            'messages': [{'role': 'user', 'content': prompt}]
+            "contents": [
+                {"role": "user", "parts": [{"text": full_prompt}]}
+            ],
+            "config": {
+                "systemInstruction": system_instruction,
+                "temperature": temperature,
+                "maxOutputTokens": 4000
+            }
         }
+        
+        # Add API Key to the URL
+        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
 
-        response = requests.post('https://api.anthropic.com/v1/messages',
-                               headers=headers, json=data, timeout=30)
+        response = requests.post(url_with_key, headers=headers, json=data, timeout=30)
 
         if response.status_code == 200:
-            claude_response = response.json()['content'][0]['text'].strip()
-            return claude_response
+            response_json = response.json()
+            # Safely extract the text from the response structure
+            gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+            if not gemini_response:
+                # Check for prompt filtering or safety block issues
+                return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
+            return gemini_response
         else:
             return f"API Error {response.status_code}: {response.text[:200]}"
 
     except Exception as e:
         return f"Error: {str(e)}"
+# --- END REPLACEMENT ---
 
-# --- FIX: Reverted/Improved search_jira_tickets_improved for robustness ---
+
+# --- FIX: JIRA Search - Restored robust progressive queries and loosened final filtering ---
 def search_jira_tickets_improved(query, limit=5, debug=True):
-    """RESTORED: Search JIRA tickets with improved relevance and stop word filtering (progressive queries)"""
+    """FIXED: Search JIRA tickets with robust progressive querying and loosened filtering."""
     try:
         if not API_STATUS.get('jira', False):
             logger.warning("JIRA API not available - skipping search")
@@ -253,19 +268,21 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Build JQL queries progressively ---
         jql_variants = []
 
-        # 1. Exact phrase in summary (titles are most relevant)
+        # 1. Exact phrase in summary (highest relevance)
         jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
 
         # 2. Clean words AND in summary and text
         if len(clean_query_words) > 1:
+            # Use 'text' to search description, comments, and environment
             and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
             jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
 
-        # 3. Clean words OR in summary and text
+        # 3. Clean words OR in summary and text (broad match)
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            # Added a fallback search on all content for the OR query
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
-        # 4. Single most important word in summary only
+        # 4. Single most important word in summary only (fallback)
         if len(clean_query_words) > 0:
             main_word = max(clean_query_words, key=len)
             jql_variants.append(f'summary ~ "{main_word}" ORDER BY updated DESC')
@@ -291,7 +308,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
                     issues = data.get('issues', [])
 
                     if issues:
-                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results")
+                        logger.info(f"JIRA query #{i+1} returned {len(issues)} results. Breaking.")
                         final_issues = issues
                         break
                     else:
@@ -307,7 +324,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
             logger.info("No JIRA results found with any query variant")
             return []
 
-        # --- Score and filter results (retaining existing logic) ---
+        # --- Score and filter results ---
         def score_issue(issue):
             summary = issue.get('fields', {}).get('summary', '').lower()
             matches = sum(1 for word in clean_query_words if word.lower() in summary)
@@ -324,14 +341,13 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Format results ---
         results = []
         for score, issue in scored_issues[:limit]:
-            # Retaining the original score > 0 check to filter out irrelevant tickets
-            if score > 0:
-                summary = issue.get('fields', {}).get('summary', 'No summary')
-                key = issue.get('key', 'Unknown')
-                results.append({
-                    'title': f"{key}: {summary}",
-                    'url': f"{JIRA_URL}/browse/{key}"
-                })
+            # **FIX: Removed 'if score > 0' filter to allow valid low-scoring matches**
+            summary = issue.get('fields', {}).get('summary', 'No summary')
+            key = issue.get('key', 'Unknown')
+            results.append({
+                'title': f"{key}: {summary}",
+                'url': f"{JIRA_URL}/browse/{key}"
+            })
 
         logger.info(f"JIRA search found {len(results)} relevant results")
         return results
@@ -341,12 +357,10 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         return []
 # --- END FIX ---
 
-# --- FIX: Reverted/Improved search_confluence_docs_improved for robustness ---
+# --- FIX: Confluence Search - Restored robust progressive queries and adjusted scoring ---
 def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
     """
-    RESTORED: Confluence search with progressive CQL and improved error handling:
-    - Drop stop words from queries
-    - Progressive loosening strategy
+    FIXED: Confluence search with robust progressive CQL and adjusted score handling.
     """
     try:
         if not API_STATUS.get('confluence', False):
@@ -394,7 +408,10 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
 
         # 3. Clean words OR (standard fields)
         or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            # **FIX: Added a fallback broad search on all content for the OR query**
+        or_parts.append(f'content ~ "{query}"')
         cql_variants.append(" OR ".join(or_parts))
+
 
         # 4. Single most important word (if we have multiple)
         if len(clean_query_words) > 1:
@@ -420,17 +437,12 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
                 results = run_search(cql)
 
                 if results:
-                    # Score is often missing in Confluence API, use a default of 1 if missing
-                    top_score = max(r.get("score", 0) or 1 for r in results[:3])
-                    logger.info(f"Query #{i+1} returned {len(results)} results, top score: {top_score}")
-
-                    # If we got decent results (score > 1) or this is our last attempt, use them
-                    if top_score > 1 or i == len(cql_variants) - 1:
-                        final_results = results
-                        logger.info(f"Using results from query #{i+1}")
-                        break
-                    else:
-                        logger.info(f"Top score {top_score} too low, trying next query...")
+                    # **FIX: Removed score check - we trust the progressive query, the validation will filter bad results.**
+                    final_results = results
+                    logger.info(f"Query #{i+1} returned {len(results)} results. Using these results.")
+                    break
+                else:
+                    logger.info(f"Query #{i+1} returned no results, trying next query...")
 
             except requests.exceptions.HTTPError as http_e:
                  logger.error(f"Confluence query #{i+1} failed HTTP: {http_e.response.status_code} - {http_e.response.text[:100]}", exc_info=True)
@@ -476,7 +488,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
 # --- END FIX ---
 
 
-# --- FIX 3: Simplified search_zendesk_tickets ---
+# --- FIX 3: Simplified search_zendesk_tickets (Kept same) ---
 def search_zendesk_tickets_improved(query, limit=5):
     """Simplified Zendesk search, using API_STATUS"""
     if not API_STATUS.get('zendesk', False):
@@ -676,7 +688,7 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
-# --- FIX 4: Robust fetch_help_doc_content with BeautifulSoup Fallback ---
+# --- FIX 4: Robust fetch_help_doc_content with BeautifulSoup Fallback (Kept same) ---
 def fetch_help_doc_content_improved(url, max_content_length=2000):
     """Improved content fetching with fallback for missing BeautifulSoup"""
     try:
@@ -803,14 +815,14 @@ def verify_step_extraction(query, resources_with_content):
     # This function is not used in the current flow, but kept in case it is reintroduced.
     pass
 
-# --- FIX 5: Update Main Resource Generation Function (Updated to use restored functions) ---
+# --- FIX 5: Update Main Resource Generation Function (Kept same, calls updated searches) ---
 def generate_related_resources_improved(query):
     """Improved resource generation with better validation and search calls"""
     logger.info(f"🔍 Searching for resources: '{query}'")
 
     # Perform searches with restored/improved functions
     help_docs = validate_search_results_improved(query, search_help_docs(query, limit=4), "Help Docs")
-    # Using the restored functions:
+    # Using the restored, robust functions:
     confluence_docs = validate_search_results_improved(query, search_confluence_docs_improved(query, limit=4), "Confluence")
     jira_tickets = validate_search_results_improved(query, search_jira_tickets_improved(query, limit=4), "JIRA")
     support_tickets = validate_search_results_improved(query, search_zendesk_tickets_improved(query, limit=4), "Zendesk")
@@ -1007,14 +1019,7 @@ def generate_athena_insights(user_query):
         available_tables = get_available_tables(database_name)
         table_list = ', '.join(available_tables[:20]) if available_tables else "campaign_execution_v3"
 
-        # Use AI to determine what kind of data query would be helpful
-        headers = {
-            'x-api-key': AI_API_KEY,
-            'Content-Type': 'application/json',
-            'anthropic-version': '2023-06-01'
-        }
-
-        # Simple prompt matching actual query patterns from examples
+        # --- Use the new call_gemini_api for analysis ---
         analysis_prompt = f"""Generate a simple Athena SQL query for this Blueshift support question: "{user_query}"
 
 Available database: {database_name}
@@ -1067,22 +1072,16 @@ SQL_QUERY:
 INSIGHT_EXPLANATION:
 [Brief explanation of what this query will show]"""
 
-        data = {
-            'model': 'claude-3-5-sonnet-20241022',
-            'max_tokens': 400,
-            'messages': [{'role': 'user', 'content': analysis_prompt}]
-        }
+        # Call the unified Gemini API function
+        ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
+        # --- End Gemini API call ---
 
-        response = requests.post('https://api.anthropic.com/v1/messages',
-                               headers=headers, json=data, timeout=15)
-
-        if response.status_code == 200:
-            ai_response = response.json()['content'][0]['text'].strip()
-            logger.info(f"Athena AI response: {ai_response[:200]}...")
-            return parse_athena_analysis(ai_response, user_query)
-        else:
-            logger.error(f"Athena AI API error: {response.status_code}")
+        if ai_response.startswith("Error:"):
+            logger.error(f"Athena AI API error: {ai_response}")
             return get_default_athena_insights(user_query)
+
+        logger.info(f"Athena AI response: {ai_response[:200]}...")
+        return parse_athena_analysis(ai_response, user_query)
 
     except Exception as e:
         logger.error(f"Athena insights generation error: {e}")
@@ -1245,8 +1244,8 @@ def handle_query():
 
         logger.info(f"Resources with actual step content: {total_step_content}")
 
-        # Call improved AI function
-        ai_response = call_anthropic_api(query, platform_resources_with_content)
+        # Call the new Gemini API function
+        ai_response = call_gemini_api(query, platform_resources_with_content)
 
         # Generate Athena insights
         athena_insights = generate_athena_insights(query)
@@ -1275,8 +1274,8 @@ def handle_followup():
         if not followup_query:
             return jsonify({"error": "Please provide a follow-up question"})
 
-        # Call Anthropic API
-        ai_response = call_anthropic_api(followup_query)
+        # Call Gemini API
+        ai_response = call_gemini_api(followup_query)
 
         return jsonify({
             "response": ai_response
@@ -2006,13 +2005,13 @@ if __name__ == '__main__':
 
     # Debug: Check environment variables
     print(f"\n=== Environment Variables Debug ===")
-    print(f"JIRA_TOKEN: {'✅ Configured' if JIRA_TOKEN else '❌ Not set'}")
-    print(f"JIRA_EMAIL: {'✅ Configured' if JIRA_EMAIL else '❌ Not set'}")
-    print(f"CONFLUENCE_TOKEN: {'✅ Configured' if CONFLUENCE_TOKEN else '❌ Not set'}")
-    print(f"CONFLUENCE_EMAIL: {'✅ Configured' if CONFLUENCE_EMAIL else '❌ Not set'}")
-    print(f"ZENDESK_TOKEN: {'✅ Configured' if ZENDESK_TOKEN else '❌ Not set'}")
-    print(f"ZENDESK_EMAIL: {'✅ Configured' if ZENDESK_EMAIL else '❌ Not set'}")
-    print(f"ZENDESK_SUBDOMAIN: {'✅ Configured' if ZENDESK_SUBDOMAIN else '❌ Not set'}")
+    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
+    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
     print("=" * 40)
     
     # Print API status results

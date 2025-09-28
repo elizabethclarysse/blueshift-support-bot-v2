@@ -125,12 +125,12 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-# --- REPLACEMENT FOR call_anthropic_api, WITH GENERATION CONFIG FIX ---
+# --- REPLACEMENT FOR call_anthropic_api, WITH TIMEOUT AND MAX_TOKEN ADJUSTMENT ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration.
     
-    FIX: The system instruction is now passed as the first element in the 'contents'
-    array with the role 'system', which is the reliable method for the REST API.
+    FIX: The system instruction is passed as a combined prompt to avoid JSON structure errors.
+    FIX: Timeout increased to 60 seconds and maxOutputTokens reduced to 2000 for faster response.
     """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
@@ -158,9 +158,8 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                 for i, resource in enumerate(platform_resources[:3]):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # System Instruction content
-        # NOTE: THIS CONTENT IS NOW PASSED AS A SYSTEM ROLE IN THE CONTENTS ARRAY
-        system_instruction_content = f"""You are a Blueshift Support Agent helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        # System Instruction content (Used as a prefix to the user prompt)
+        system_instruction_content = f"""You are a Blueshift Support Agent troubleshooting customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -204,34 +203,27 @@ When this feature isn't working as expected:
 - This is internal support guidance - provide actionable troubleshooting steps
 """
 
-        full_prompt = f"SUPPORT QUERY: {query}\n{platform_context}"
+        # Combine system instruction and user query into a single user message part
+        full_prompt = system_instruction_content + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
 
-        # Build the contents array: [System Instruction, User Prompt]
         contents_array = [
-            {"role": "user", "parts": [{"text": system_instruction_content + "\n\n" + full_prompt}]}
-            # NOTE: We combine the system instruction and user prompt into a single user message
-            # due to common ambiguity in REST API system instruction support.
-            # If the user still gets confused, the next step is to explicitly use the 'system' role
-            # for the instruction: {"role": "system", "parts": [{"text": system_instruction_content}]} 
-            # followed by the user role. But for now, we combine to avoid the JSON structure error.
+            {"role": "user", "parts": [{"text": full_prompt}]}
         ]
 
-
         data = {
-            # --- FINAL FIX: Contents array setup ---
             "contents": contents_array,
-            # --- generationConfig containing ONLY model parameters ---
             "generationConfig": { 
                 "temperature": temperature,
-                "maxOutputTokens": 4000
+                "maxOutputTokens": 2000 # Reduced for performance
             }
-            # --------------------------------------------------------
         }
         
         # Add API Key to the URL
         url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
 
-        response = requests.post(url_with_key, headers=headers, json=data, timeout=30)
+        # --- FIX: Timeout increased to 60 seconds ---
+        response = requests.post(url_with_key, headers=headers, json=data, timeout=60) 
+        # --------------------------------------------
 
         if response.status_code == 200:
             response_json = response.json()
@@ -543,7 +535,7 @@ def search_zendesk_tickets_improved(query, limit=5):
             logger.info(f"Zendesk search returned {len(results)} results for '{query}'")
             return results
         else:
-            logger.error(f"Zendesk search failed: {response.status_code} - {response.text[:200]}")
+            logger.error(f"ZENDESK search failed: {response.status_code} - {response.text[:200]}")
             return []
             
     except Exception as e:

@@ -163,7 +163,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are a Blueshift support agent troubleshooting customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -359,8 +359,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
 # --- FIX: Confluence Search - Bypassed Validation for Raw Results ---
 def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
     """
-    FIXED: Confluence search logic. Since validation is too aggressive, we remove 
-    the result validation step from this function, relying on the central validation only.
+    FIXED: Confluence search logic. Returns raw results, relying on central validation.
     """
     try:
         if not API_STATUS.get('confluence', False):
@@ -473,7 +472,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
 
         logger.info(f"Confluence search found {len(formatted)} results")
         
-        # CRITICAL FIX: We are now relying solely on validate_search_results_improved in generate_related_resources_improved
+        # Returning raw results to be validated centrally in generate_related_resources_improved
         return formatted
 # --- END FIX ---
 
@@ -1828,4 +1827,196 @@ MAIN_TEMPLATE = '''
             </div>
 
             <div class="feature">
-                <h3>🎯 Zendesk
+                <h3>🎯 Zendesk</h3>
+                <ul>
+                    <li>Customer support ticket analysis</li>
+                    <li>Similar issue resolutions</li>
+                    <li>Support team responses</li>
+                    <li>Escalation procedures</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('searchBtn').addEventListener('click', function() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) {
+                alert('Please enter a question first');
+                return;
+            }
+
+            // Show loading
+            document.getElementById('searchBtn').innerHTML = '<span class="loading"></span> Analyzing...';
+            document.getElementById('searchBtn').disabled = true;
+
+            fetch('/query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: query })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+
+                // Show response
+                document.getElementById('responseContent').textContent = data.response;
+                const resultsContainer = document.getElementById('resultsContainer');
+                resultsContainer.style.display = 'block';
+                resultsContainer.classList.add('show');
+
+                // Show resources in 4-column grid
+                showResources(data.resources);
+
+                // Show Athena insights if available
+                if (data.athena_insights) {
+                    showAthenaInsights(data.athena_insights);
+                }
+
+                // Reset button
+                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
+                document.getElementById('searchBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
+                document.getElementById('searchBtn').disabled = false;
+            });
+        });
+
+        document.getElementById('followupBtn').addEventListener('click', function() {
+            const followupQuery = document.getElementById('followupInput').value.trim();
+            if (!followupQuery) {
+                alert('Please enter a follow-up question');
+                return;
+            }
+
+            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
+            document.getElementById('followupBtn').disabled = true;
+
+            fetch('/followup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: followupQuery })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+
+                document.getElementById('followupResponse').textContent = data.response;
+                document.getElementById('followupResponse').style.display = 'block';
+                document.getElementById('followupInput').value = '';
+
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            });
+        });
+
+        function showResources(resources) {
+            const sourcesGrid = document.getElementById('sourcesGrid');
+            sourcesGrid.innerHTML = '';
+
+            const categories = [
+                { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
+                { key: 'help_docs', title: '📚 Help Docs & APIs', icon: '📚' },
+                { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
+                { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
+            ];
+
+            categories.forEach(category => {
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'source-category';
+                categoryDiv.innerHTML = `<h4>${category.title}</h4>`;
+
+                // For Help Docs, combine both help_docs and api_docs
+                let items = [];
+                if (category.key === 'help_docs') {
+                    items = [...(resources['help_docs'] || []), ...(resources['api_docs'] || [])];
+                } else {
+                    items = resources[category.key] || [];
+                }
+
+                items.forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'source-item';
+                    itemDiv.innerHTML = `<a href="${item.url}" target="_blank">${item.title}</a>`;
+                    categoryDiv.appendChild(itemDiv);
+                });
+
+                sourcesGrid.appendChild(categoryDiv);
+            });
+        }
+
+        // Allow Enter key to trigger search
+        document.getElementById('queryInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('searchBtn').click();
+            }
+        });
+
+        document.getElementById('followupInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('followupBtn').click();
+            }
+        });
+
+        function showAthenaInsights(athenaData) {
+            // Show the Athena section
+            document.getElementById('athenaSection').style.display = 'block';
+
+            // Set database
+            document.getElementById('athenaDatabase').textContent = athenaData.database || 'default';
+
+            // Set explanation
+            document.getElementById('athenaExplanation').textContent = athenaData.explanation;
+
+            // Set editable SQL query
+            document.getElementById('suggestedQuery').value = athenaData.sql_query;
+
+        }
+
+    </script>
+</body>
+</html>
+'''
+
+if __name__ == '__main__':
+    print("Starting Blueshift Support Bot with AWS Athena Integration...")
+    port = int(os.environ.get('PORT', 8103))
+    print(f"Visit: http://localhost:{port}")
+    print(f"AWS Region: {AWS_REGION}")
+    print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
+    print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
+
+    # Debug: Check environment variables
+    print(f"\n=== Environment Variables Debug ===")
+    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
+    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
+    print("=" * 40)
+    
+    # Print API status results
+    print("\n=== External API Status ===")
+    for api, status in API_STATUS.items():
+        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
+    print("=" * 40)
+
+    # ADDED Diagnostic Print Statement
+    print("--- ATTEMPTING TO START FLASK APP ---")
+
+    app.run(host='0.0.0.0', port=port, debug=True)

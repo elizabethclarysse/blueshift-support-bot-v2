@@ -27,7 +27,7 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 # AWS Athena configuration - set these via environment variables
 ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
-ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/')
+ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/athena-results/')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
 # API Configuration for searches
@@ -285,7 +285,8 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
-        url = f"{JIRA_URL}/rest/api/3/search"
+        # Use the correct JIRA v3 API endpoint for JQL queries
+        url = f"{JIRA_URL}/rest/api/3/search/jql"
 
         # --- Try queries in order ---
         final_issues = []
@@ -299,7 +300,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
                     'fields': 'summary,key,status,priority,issuetype'
                 }
 
-                # CRITICAL FIX: Changed from POST to GET and moved JQL to params
+                # Use the correct v3 API endpoint with GET request
                 response = requests.get(url, headers=headers, params=params, timeout=15) 
 
                 if response.status_code == 200:
@@ -777,10 +778,12 @@ def validate_search_results_improved(query, results, source_name):
         # Check for ANY relevance at all
         meaningful_matches = len([w for w in clean_query_words if w in title])
 
-        # Only reject if ZERO matches AND no Blueshift terms
-        if meaningful_matches == 0:
+        # Special handling for Confluence - be extremely lenient since Confluence search already did relevance filtering
+        if source_name == "Confluence":
+            should_include = True  # Accept all Confluence results since they passed Confluence's own relevance filtering
+        elif meaningful_matches == 0:
             # Expanded platform terms for better context matching
-            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence'}
+            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence', 'facebook', 'audience', 'lookalike'}
             has_blueshift = any(term in title for term in blueshift_terms)
 
             if not has_blueshift:
@@ -1023,35 +1026,51 @@ def generate_athena_insights(user_query):
 Available database: {database_name}
 Main table: customer_campaign_logs.campaign_execution_v3
 
-Based on the user's question, create a SIMPLE query following these patterns:
+IMPORTANT: Only suggest database queries if the user's question is about:
+- Error troubleshooting or debugging platform issues
+- Campaign execution problems
+- Message delivery failures
+- User behavior analysis
+- Platform performance issues
 
-For EXTERNAL FETCH errors:
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+If the user is asking about:
+- Feature setup (like Facebook audiences, integrations)
+- How-to questions about platform navigation
+- General feature explanations
+- Configuration instructions
+
+Then provide a simple informational query that shows recent campaign activity instead.
+
+Query patterns based on user question:
+
+For ERROR troubleshooting (error, failed, not working, broken):
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
 and log_level = 'ERROR'
-and message LIKE '%ExternalFetchError%'
+and message LIKE '%[relevant_error_term]%'
 ORDER BY timestamp DESC
+LIMIT 50
 
-For other ERROR queries:
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'your_account_uuid'
-and log_level = 'ERROR'
-and message LIKE '%[error_term]%'
-ORDER BY timestamp DESC
-
-For general troubleshooting:
+For feature questions (how to, create, setup, configure):
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'your_account_uuid'
 ORDER BY timestamp DESC
+LIMIT 20
+
+For general analysis:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'your_account_uuid'
+ORDER BY timestamp DESC
+LIMIT 50
 
 RULES:
 - Keep it SIMPLE - no complex OR conditions
-- Use only ONE message LIKE condition
+- Use only ONE message LIKE condition when filtering errors
 - Always include account_uuid placeholder ('your_account_uuid')
-- Use ORDER BY timestamp DESC
+- Use ORDER BY timestamp DESC with LIMIT
 - You MUST use the FULL table name: customer_campaign_logs.campaign_execution_v3
 - NO file_date conditions
 - NO multiple OR clauses
@@ -1060,10 +1079,10 @@ Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Simple query with one message filter]
+[Simple query appropriate for the user's question type]
 
 INSIGHT_EXPLANATION:
-[Brief explanation of what this query will show]"""
+[Brief explanation of what this query will show and why it's relevant to the user's question]"""
 
         # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
         ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
@@ -1122,14 +1141,14 @@ def parse_athena_analysis(ai_response, user_query):
             elif in_explanation_section and line:
                 explanation += line + "\n"
 
-        # Return the suggested query template for manual customization
+        # Return the suggested query template for manual customization (no execution to avoid S3 permission issues)
         if sql_query.strip():
             print(f"Generated SQL Query: {sql_query.strip()}")  # Debug output
             return {
                 'database': database_name,
                 'sql_query': sql_query.strip(),
-                'explanation': explanation.strip() + "\n\nCopy this query to Athena and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
-                'results': {"note": "Query template ready for manual customization in Athena", "data": []},
+                'explanation': explanation.strip() + "\n\n💡 Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
+                'results': {"note": "Query template ready for manual customization in Athena - no execution attempted to avoid S3 permission issues", "data": []},
                 'has_data': False
             }
         else:

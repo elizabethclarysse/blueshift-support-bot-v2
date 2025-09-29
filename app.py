@@ -1987,3 +1987,33 @@ MAIN_TEMPLATE = '''
 </body>
 </html>
 '''
+
+if __name__ == '__main__':
+    print("Starting Blueshift Support Bot with AWS Athena Integration...")
+    port = int(os.environ.get('PORT', 8103))
+    print(f"Visit: http://localhost:{port}")
+    print(f"AWS Region: {AWS_REGION}")
+    print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
+    print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
+
+    # Debug: Check environment variables
+    print(f"\n=== Environment Variables Debug ===")
+    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
+    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
+    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
+    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
+    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
+    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
+    print("=" * 40)
+    
+    # Print API status results
+    print("\n=== External API Status ===")
+    for api, status in API_STATUS.items():
+        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
+    print("=" * 40)
+
+    # ADDED Diagnostic Print Statement
+    print("--- ATTEMPTING TO START FLASK APP ---")
+
+    app.run(host='0.0.0.0', port=port, debug=True)

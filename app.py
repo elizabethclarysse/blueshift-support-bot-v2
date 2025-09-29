@@ -463,12 +463,24 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Format results ---
         formatted = []
         for r in ranked[:limit]:
-            page_id = r.get("content", {}).get("id")
+            # Try multiple ways to get the page ID due to different Confluence API response formats
+            page_id = r.get("content", {}).get("id") or r.get("id")
             title = r.get("title") or "Untitled"
+
+            # Debug log the structure of results that don't have page_id
             if not page_id:
-                continue
-            # Use the most common and reliable URL format
-            page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+                logger.warning(f"Confluence result missing page_id: {r.keys()} - title: {title}")
+                # Try to construct URL using other fields if available
+                if "url" in r:
+                    page_url = r["url"]
+                elif "_links" in r and "webui" in r["_links"]:
+                    page_url = f"{CONFLUENCE_URL.rstrip('/wiki')}{r['_links']['webui']}"
+                else:
+                    continue  # Skip if we can't get a URL
+            else:
+                # Use the most common and reliable URL format
+                page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+
             formatted.append({"title": title, "url": page_url})
 
         logger.info(f"Confluence search found {len(formatted)} results")
@@ -980,19 +992,13 @@ def customize_query_for_execution(sql_query, user_query):
     return customized
 
 def get_available_tables(database_name):
-    """Get list of available tables in the database"""
+    """Get list of available tables in the database - returns hardcoded list to avoid S3 permission issues"""
     try:
-        # Get a sample of tables to help AI understand the schema
-        show_tables_query = f"SHOW TABLES IN {database_name}"
-        # We call query_athena which will return an error data structure if permissions are bad,
-        # but we handle it here by returning an empty list.
-        result = query_athena(show_tables_query, database_name, "Get table list")
-
-        if result.get('data'):
-            # Return first 50 tables as a sample (to avoid overwhelming the AI)
-            tables = [row[result['columns'][0]] for row in result['data'][:50]]
-            return tables
-        return []
+        # Return a hardcoded list of known tables to avoid executing queries that require S3 permissions
+        if database_name == 'customer_campaign_logs':
+            return ['campaign_execution_v3', 'user_events', 'campaign_metrics', 'email_events', 'sms_events']
+        else:
+            return ['campaign_execution_v3']  # Default fallback
     except Exception as e:
         print(f"Error getting tables: {e}")
         return []

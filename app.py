@@ -1159,16 +1159,25 @@ where
     other condition
   )
 
-ALWAYS format like this (GOOD - COPY THIS EXACT STYLE):
+ALWAYS format like this (EXACT REQUIRED FORMAT):
 select timestamp, user_uuid, campaign_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and file_date >= '2024-12-01'
 and message like '%facebook%'
+and message like '%syndication%'
+and file_date >= '2024-12-01'
 order by timestamp desc
 limit 100
 
-CRITICAL: Do not put each column or condition on separate lines! Keep columns together on the SELECT line, keep conditions together after WHERE.
+CRITICAL FORMATTING RULES:
+- SELECT with columns stays together on one line
+- FROM on its own line
+- WHERE on its own line
+- Each AND message like condition on its own separate line (BEFORE file_date)
+- AND file_date condition on its own line (AFTER message conditions)
+- ORDER BY on its own line
+- LIMIT on its own line
+- This should be 7-8 lines total, not 1 line, not 3 lines
 
 QUERY RULES:
 - Use recent date: file_date >= '2024-12-01'

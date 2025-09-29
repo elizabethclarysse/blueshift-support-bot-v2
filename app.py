@@ -1066,87 +1066,81 @@ def generate_athena_insights(user_query):
 
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""You are a Blueshift data analyst. Generate a highly relevant Athena SQL query for this support question: "{user_query}"
+        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"
 
 AVAILABLE DATA:
 - Database: {database_name}
 - Main table: customer_campaign_logs.campaign_execution_v3
-- Key columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+- Key columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name, transaction_uuid, execution_key
 
-TASK: Analyze the user's question and identify the most relevant search terms, then create a targeted query.
+ANALYZE THE USER'S QUESTION and generate a query that matches actual Blueshift support query patterns.
 
-THINKING PROCESS:
-1. Extract key concepts from the user's question
-2. Identify relevant log patterns or keywords that would appear in the message field
-3. Determine if this is an error investigation (use log_level = 'ERROR') or feature analysis
-4. Create focused WHERE conditions using the most relevant terms
+QUERY PATTERNS FROM REAL EXAMPLES:
 
-QUERY CONSTRUCTION GUIDELINES:
-- Use the user's actual question words as search terms in the message field
-- For feature questions: Look for related terms that would appear in campaign logs
-- For error questions: Include log_level = 'ERROR' and error-specific terms
-- For setup/configuration questions: Look for setup, configuration, or initialization messages
-- For delivery/sending questions: Look for delivery, sent, failed, or bounce terms
-- Always include account_uuid placeholder: 'your_account_uuid'
-- Use LIKE '%term%' for flexible matching
-- Combine multiple related terms with OR when logical (not AND)
-- Keep SQL formatting clean and consistent
+Basic troubleshooting:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and campaign_uuid = 'campaign-uuid-here'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp asc;
 
-SQL FORMATTING RULES:
-- No quotes around column names unless necessary
-- Use single quotes for string literals
-- Put each major clause on its own line for readability
-- Use OR for multiple message filters, not AND
-- End with semicolon
-- Standard format:
-  SELECT columns
-  FROM table
-  WHERE conditions
-  ORDER BY timestamp DESC
-  LIMIT number;
+Error investigation:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and campaign_uuid = 'campaign-uuid-here'
+and file_date >= '2024-12-01'
+and log_level = 'ERROR'
+order by timestamp asc;
 
-EXAMPLE THOUGHT PROCESS:
-User asks: "campaign optimizer set up"
-→ Key terms: optimizer, setup, configuration, variation
-→ Query:
-SELECT timestamp, user_uuid, campaign_uuid, message
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'your_account_uuid'
-AND (message LIKE '%optimizer%' OR message LIKE '%setup%' OR message LIKE '%variation%')
-ORDER BY timestamp DESC
-LIMIT 50;
+Channel limit errors:
+select count(distinct(user_uuid))
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and campaign_uuid = 'campaign-uuid-here'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+and message like '%ChannelLimitError%';
 
-User asks: "why emails not sending"
-→ Key terms: email, sending, delivery, failed
-→ Query:
-SELECT timestamp, user_uuid, campaign_uuid, message, log_level
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'your_account_uuid'
-AND log_level = 'ERROR'
-AND (message LIKE '%email%' OR message LIKE '%sending%' OR message LIKE '%delivery%')
-ORDER BY timestamp DESC
-LIMIT 50;
+External fetch issues:
+select timestamp, user_uuid, campaign_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and campaign_uuid = 'campaign-uuid-here'
+and file_date >= '2024-12-01'
+and message like '%ExternalFetchError%'
+order by timestamp asc;
 
-User asks: "channel limit errors"
-→ Key terms: channel, limit, skip
-→ Query:
-SELECT timestamp, user_uuid, campaign_uuid, message
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'your_account_uuid'
-AND (message LIKE '%channel limit%' OR message LIKE '%skip%')
-ORDER BY timestamp DESC
-LIMIT 50;
+USER JOURNEY ANALYSIS:
+For questions about specific users, campaigns, or features, generate queries that:
+- Include specific user_uuid when investigating user journeys
+- Use file_date ranges (typically 7-30 days)
+- Include relevant message filters for the feature/issue
+- Order by timestamp asc for chronological analysis
 
-Now generate a query specifically for: "{user_query}"
+RULES:
+- Always use account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+- Always include file_date filter (file_date >= 'YYYY-MM-DD')
+- Use file_date < for end ranges when appropriate
+- For errors: add log_level = 'ERROR'
+- Use message like '%specific_term%' for feature searches
+- Include campaign_uuid = 'placeholder' when campaign-specific
+- Include user_uuid = 'placeholder' when user-specific
+- Order by timestamp asc for journey analysis, desc for recent events
+- Limit to 50-100 for performance
+
+Generate a query specifically for: "{user_query}"
 
 Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Your contextually relevant query based on the user's specific question]
+[Query matching real Blueshift support patterns]
 
 INSIGHT_EXPLANATION:
-[Explain your reasoning: what terms you're searching for and why this query will help answer their question]"""
+[Explain what this query will find and why it's relevant to the user's question]"""
 
         # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
         ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)

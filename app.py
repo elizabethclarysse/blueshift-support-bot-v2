@@ -340,9 +340,8 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         def score_issue(issue):
             summary = issue.get('fields', {}).get('summary', '').lower()
 
-            # Count exact word matches in summary
-            summary_words = set(summary.split())
-            matches = sum(1 for word in clean_query_words if word.lower() in summary_words)
+            # Count partial word matches in summary (more lenient)
+            matches = sum(1 for word in clean_query_words if word.lower() in summary)
 
             # Bonus for exact phrase match
             exact_bonus = 50 if query.lower() in summary else 0
@@ -364,7 +363,10 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
             issue_type_name = issue_type.get('name', '').lower() if issue_type else ''
             type_bonus = 5 if 'bug' in issue_type_name or 'support' in issue_type_name else 0
 
-            total_score = (matches * 10) + exact_bonus + completeness_bonus + priority_bonus + type_bonus
+            # Minimum base score for relevant-sounding tickets
+            base_score = 5 if ('facebook' in summary or 'syndication' in summary or 'audience' in summary) else 0
+
+            total_score = (matches * 10) + exact_bonus + completeness_bonus + priority_bonus + type_bonus + base_score
             return total_score
 
         # Sort by relevance score
@@ -640,6 +642,10 @@ def search_help_docs(query, limit=3):
         {"title": "Email Campaign Creation", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173-Email-campaigns", "keywords": ["email", "campaign", "create", "setup", "subject", "line", "personalization", "template"]},
         {"title": "Personalization and Dynamic Content", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253-Personalization", "keywords": ["personalization", "dynamic", "content", "subject", "line", "custom", "attributes", "merge"]},
         {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
+        {"title": "Facebook Conversions API", "url": "https://help.blueshift.com/hc/en-us/articles/24009984649235-Facebook-Conversions-API", "keywords": ["facebook", "conversions", "api", "integration", "tracking", "audience", "syndication", "setup"]},
+        {"title": "Facebook Audience Syndication", "url": "https://help.blueshift.com/hc/en-us/articles/360046864473-Facebook-audience", "keywords": ["facebook", "audience", "syndication", "lookalike", "custom", "integration", "setup", "troubleshoot"]},
+        {"title": "External Fetch Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/360006449754-External-fetch", "keywords": ["external", "fetch", "api", "integration", "troubleshoot", "error", "failed", "configuration"]},
+        {"title": "Webhook Integration Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333-Webhooks", "keywords": ["webhook", "integration", "api", "external", "setup", "troubleshoot", "failed", "configuration"]},
     ]
 
     query_lower = query.lower()
@@ -815,27 +821,34 @@ def validate_search_results_improved(query, results, source_name):
     query_words = set(query.lower().split()) # FIX: ensure the query words are lowercased here
     validated_results = []
 
-    # Remove only the most basic stop words
-    stop_words = {'the', 'a', 'an'}
-    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
+    # Remove only the most basic stop words - keep more meaningful words
+    stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 2]
 
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
+        # Also check description/summary if available
+        description = result.get('description', '').lower()
+        summary = result.get('summary', '').lower()
+        content = f"{title} {description} {summary}".lower()
 
         # Set default to ACCEPT (the core fix)
-        should_include = True  
-        
-        # Check for ANY relevance at all
-        meaningful_matches = len([w for w in clean_query_words if w in title])
+        should_include = True
+
+        # Check for ANY relevance in title OR content
+        meaningful_matches = len([w for w in clean_query_words if w in content])
 
         # Special handling for Confluence - be extremely lenient since Confluence search already did relevance filtering
         if source_name == "Confluence":
             should_include = True  # Accept all Confluence results since they passed Confluence's own relevance filtering
+        elif source_name == "JIRA":
+            # Be very lenient with JIRA results since they're already scored and filtered
+            should_include = True  # Accept JIRA results that made it through the scoring system
         elif meaningful_matches == 0:
             # Expanded platform terms for better context matching
-            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence', 'facebook', 'audience', 'lookalike'}
-            has_blueshift = any(term in title for term in blueshift_terms)
+            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence', 'facebook', 'audience', 'lookalike', 'syndication', 'integration', 'external', 'fetch', 'optimizer', 'email', 'sms', 'segment', 'webhook', 'personalization', 'recommendation', 'error', 'failed', 'limit', 'channel', 'delivery', 'bounce'}
+            has_blueshift = any(term in content for term in blueshift_terms)
 
             if not has_blueshift:
                 should_include = False  # Only reject if truly irrelevant
@@ -1123,21 +1136,44 @@ For questions about specific users, campaigns, or features, generate queries tha
 - Include relevant message filters for the feature/issue
 - Order by timestamp asc for chronological analysis
 
-FORMATTING RULES:
-- Each major SQL clause on its own line: SELECT on line 1, FROM on line 2, WHERE on line 3, etc.
-- Use lowercase keywords: select, from, where, and, order by, limit
-- No semicolon at the end
-- Clean readable format with proper line breaks
+CRITICAL FORMATTING REQUIREMENTS:
+Write the SQL query EXACTLY in this compact format - DO NOT break each column or condition into separate lines:
+
+select timestamp, user_uuid, campaign_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and file_date >= '2024-12-22'
+and message like '%facebook%'
+order by timestamp desc
+limit 100
+
+NEVER format like this (BAD):
+select
+  timestamp,
+  user_uuid
+from
+  table
+where
+  condition
+  and (
+    other condition
+  )
+
+ALWAYS format like this (GOOD - COPY THIS EXACT STYLE):
+select timestamp, user_uuid, campaign_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+and file_date >= '2024-12-01'
+and message like '%facebook%'
+order by timestamp desc
+limit 100
+
+CRITICAL: Do not put each column or condition on separate lines! Keep columns together on the SELECT line, keep conditions together after WHERE.
 
 QUERY RULES:
-- Always use account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-- Always include file_date filter (file_date >= 'YYYY-MM-DD')
-- Use file_date < for end ranges when appropriate
-- For errors: add log_level = 'ERROR'
-- Use message like '%specific_term%' for feature searches
-- Include campaign_uuid = 'placeholder' when campaign-specific
-- Include user_uuid = 'placeholder' when user-specific
-- Order by timestamp asc for journey analysis, desc for recent events
+- Use recent date: file_date >= '2024-12-01'
+- Include relevant message search terms for the user's question
+- Use order by timestamp desc
 - Always end with limit 100
 
 Generate a query specifically for: "{user_query}"
@@ -1146,10 +1182,10 @@ Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Query matching real Blueshift support patterns]
+[Write the exact format shown above - each clause on its own line with proper spacing]
 
 INSIGHT_EXPLANATION:
-[Explain what this query will find and why it's relevant to the user's question]"""
+[Brief explanation of what this query searches for and why it helps with the user's question]"""
 
         # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
         ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)

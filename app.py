@@ -281,7 +281,18 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # 1. Exact phrase (highest relevance)
         jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
 
-        # 2. Clean words OR in summary and text (most reliable for finding results)
+        # 2. All clean words AND in summary and text (better relevance than OR)
+        if len(clean_query_words) > 1:
+            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
+
+        # 3. Most important words (fallback) - use the two longest/most significant words
+        if len(clean_query_words) >= 2:
+            important_words = sorted(clean_query_words, key=len, reverse=True)[:2]
+            important_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in important_words]
+            jql_variants.append(f'({" AND ".join(important_parts)}) ORDER BY updated DESC')
+
+        # 4. Clean words OR in summary and text (most reliable for finding results but least relevant)
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
@@ -328,16 +339,44 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Score and filter results ---
         def score_issue(issue):
             summary = issue.get('fields', {}).get('summary', '').lower()
-            matches = sum(1 for word in clean_query_words if word.lower() in summary)
-            exact_bonus = 10 if query.lower() in summary else 0
+
+            # Count exact word matches in summary
+            summary_words = set(summary.split())
+            matches = sum(1 for word in clean_query_words if word.lower() in summary_words)
+
+            # Bonus for exact phrase match
+            exact_bonus = 50 if query.lower() in summary else 0
+
+            # Bonus for multiple word matches (AND logic preference)
+            if len(clean_query_words) > 1:
+                match_ratio = matches / len(clean_query_words)
+                completeness_bonus = int(match_ratio * 20)  # Up to 20 points for having all words
+            else:
+                completeness_bonus = 0
+
+            # Priority bonus (less important than relevance)
             priority = issue.get('fields', {}).get('priority', {})
             priority_name = priority.get('name', '').lower() if priority else ''
-            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
-            return matches * 3 + exact_bonus + priority_bonus
+            priority_bonus = 3 if 'high' in priority_name or 'critical' in priority_name else 0
+
+            # Issue type bonus (prefer certain types)
+            issue_type = issue.get('fields', {}).get('issuetype', {})
+            issue_type_name = issue_type.get('name', '').lower() if issue_type else ''
+            type_bonus = 5 if 'bug' in issue_type_name or 'support' in issue_type_name else 0
+
+            total_score = (matches * 10) + exact_bonus + completeness_bonus + priority_bonus + type_bonus
+            return total_score
 
         # Sort by relevance score
         scored_issues = [(score_issue(issue), issue) for issue in final_issues]
         scored_issues.sort(reverse=True, key=lambda x: x[0])
+
+        # Debug log top scoring issues
+        logger.info(f"JIRA scoring results:")
+        for i, (score, issue) in enumerate(scored_issues[:5]):
+            summary = issue.get('fields', {}).get('summary', 'No summary')
+            key = issue.get('key', 'Unknown')
+            logger.info(f"  {i+1}. Score: {score} - {key}: {summary[:50]}...")
 
         # --- Format results ---
         results = []

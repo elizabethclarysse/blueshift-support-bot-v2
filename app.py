@@ -1066,68 +1066,54 @@ def generate_athena_insights(user_query):
 
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""Generate a simple Athena SQL query for this Blueshift support question: "{user_query}"
+        analysis_prompt = f"""You are a Blueshift data analyst. Generate a highly relevant Athena SQL query for this support question: "{user_query}"
 
-Available database: {database_name}
-Main table: customer_campaign_logs.campaign_execution_v3
+AVAILABLE DATA:
+- Database: {database_name}
+- Main table: customer_campaign_logs.campaign_execution_v3
+- Key columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 
-IMPORTANT: Only suggest database queries if the user's question is about:
-- Error troubleshooting or debugging platform issues
-- Campaign execution problems
-- Message delivery failures
-- User behavior analysis
-- Platform performance issues
+TASK: Analyze the user's question and identify the most relevant search terms, then create a targeted query.
 
-If the user is asking about:
-- Feature setup (like Facebook audiences, integrations)
-- How-to questions about platform navigation
-- General feature explanations
-- Configuration instructions
+THINKING PROCESS:
+1. Extract key concepts from the user's question
+2. Identify relevant log patterns or keywords that would appear in the message field
+3. Determine if this is an error investigation (use log_level = 'ERROR') or feature analysis
+4. Create focused WHERE conditions using the most relevant terms
 
-Then provide a simple informational query that shows recent campaign activity instead.
+QUERY CONSTRUCTION GUIDELINES:
+- Use the user's actual question words as search terms in the message field
+- For feature questions: Look for related terms that would appear in campaign logs
+- For error questions: Include log_level = 'ERROR' and error-specific terms
+- For setup/configuration questions: Look for setup, configuration, or initialization messages
+- For delivery/sending questions: Look for delivery, sent, failed, or bounce terms
+- Always include account_uuid placeholder
+- Use LIKE '%term%' for flexible matching
+- Combine multiple related terms with OR when logical
 
-Query patterns based on user question:
+EXAMPLE THOUGHT PROCESS:
+User asks: "campaign optimizer set up"
+→ Key terms: optimizer, setup, configuration, A/B test, variation
+→ Query should look for: message LIKE '%optimizer%' OR message LIKE '%setup%' OR message LIKE '%variation%'
 
-For ERROR troubleshooting (error, failed, not working, broken):
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'your_account_uuid'
-and log_level = 'ERROR'
-and message LIKE '%[relevant_error_term]%'
-ORDER BY timestamp DESC
-LIMIT 50
+User asks: "why emails not sending"
+→ Key terms: email, sending, delivery, failed, error
+→ Query should look for: log_level = 'ERROR' AND (message LIKE '%email%' OR message LIKE '%sending%' OR message LIKE '%delivery%')
 
-For feature questions (how to, create, setup, configure):
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'your_account_uuid'
-ORDER BY timestamp DESC
-LIMIT 20
+User asks: "mobile push notification issues"
+→ Key terms: push, notification, mobile, failed, error
+→ Query should look for: message LIKE '%push%' OR message LIKE '%notification%' OR message LIKE '%mobile%'
 
-For general analysis:
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'your_account_uuid'
-ORDER BY timestamp DESC
-LIMIT 50
-
-RULES:
-- Keep it SIMPLE - no complex OR conditions
-- Use only ONE message LIKE condition when filtering errors
-- Always include account_uuid placeholder ('your_account_uuid')
-- Use ORDER BY timestamp DESC with LIMIT
-- You MUST use the FULL table name: customer_campaign_logs.campaign_execution_v3
-- NO file_date conditions
-- NO multiple OR clauses
+Now generate a query specifically for: "{user_query}"
 
 Format your response as:
 DATABASE: {database_name}
 
 SQL_QUERY:
-[Simple query appropriate for the user's question type]
+[Your contextually relevant query based on the user's specific question]
 
 INSIGHT_EXPLANATION:
-[Brief explanation of what this query will show and why it's relevant to the user's question]"""
+[Explain your reasoning: what terms you're searching for and why this query will help answer their question]"""
 
         # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
         ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)

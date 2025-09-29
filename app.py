@@ -1019,27 +1019,32 @@ def query_athena(query_string, database_name, query_description="Athena query"):
         return {"error": str(e), "data": []}
 
 def customize_query_for_execution(sql_query, user_query):
-    """Customize the generated query with more realistic parameters for execution"""
+    """Keep the query as a template with placeholder values - do not substitute real data"""
 
-    # Use your real account UUID as default
-    real_account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+    # Keep placeholder values for account UUIDs and other sensitive data
+    # Replace any real UUIDs that might have been inserted with placeholders
+    import re
 
-    # Replace generic UUIDs with real ones
-    customized = sql_query.replace('uuid-value', real_account_uuid)
-    customized = customized.replace('account_uuid = \'your_account_uuid\'', f'account_uuid = \'{real_account_uuid}\'')
+    # Replace any real UUID patterns with placeholder text
+    uuid_pattern = r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
+    customized = re.sub(uuid_pattern, 'client_account_uuid', sql_query)
 
-    # Use more recent dates that are likely to have data
-    import datetime
-    recent_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+    # Ensure placeholder values are used for common fields
+    customized = customized.replace('11d490bf-b250-4749-abf4-b6197620a985', 'client_account_uuid')
 
-    # Replace overly restrictive date ranges
-    customized = customized.replace('file_date >= \'2025-01-01\'', f'file_date >= \'{recent_date}\'')
-    customized = customized.replace('file_date >= \'2024-08-01\'', f'file_date >= \'{recent_date}\'')
+    # Use example placeholder dates instead of real dates - fix pattern matching
+    import re
+    # Replace file_date patterns with fixed example date
+    customized = re.sub(r"file_date >= '[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}'", "file_date >= '2024-12-01'", customized)
+    customized = re.sub(r"file_date < '[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}'", "file_date < '2024-12-15'", customized)
 
-    # For ExternalFetchError example, use recent date
-    if 'ExternalFetchError' in user_query.lower() or 'fetch' in user_query.lower():
-        customized = customized.replace('AND file_date >= ', f'AND file_date = \'{recent_date}\' AND file_date >= ')
-        customized = customized.replace(f'AND file_date = \'{recent_date}\' AND file_date >= \'{recent_date}\'', f'AND file_date >= \'{recent_date}\'')
+    # Ensure other sensitive fields use placeholders
+    if 'user_uuid' in customized and 'client_user_uuid' not in customized:
+        customized = re.sub(r"user_uuid = '[^']*'", "user_uuid = 'client_user_uuid'", customized)
+    if 'campaign_uuid' in customized and 'client_campaign_uuid' not in customized:
+        customized = re.sub(r"campaign_uuid = '[^']*'", "campaign_uuid = 'client_campaign_uuid'", customized)
+    if 'trigger_uuid' in customized and 'client_trigger_uuid' not in customized:
+        customized = re.sub(r"trigger_uuid = '[^']*'", "trigger_uuid = 'client_trigger_uuid'", customized)
 
     return customized
 
@@ -1093,8 +1098,8 @@ QUERY PATTERNS FROM REAL EXAMPLES:
 Basic troubleshooting:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and campaign_uuid = 'campaign-uuid-here'
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 order by timestamp asc
@@ -1103,8 +1108,8 @@ limit 100;
 Error investigation:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and campaign_uuid = 'campaign-uuid-here'
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and log_level = 'ERROR'
 order by timestamp asc
@@ -1113,8 +1118,8 @@ limit 100;
 Channel limit errors:
 select count(distinct(user_uuid))
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and campaign_uuid = 'campaign-uuid-here'
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 and message like '%ChannelLimitError%';
@@ -1122,8 +1127,8 @@ and message like '%ChannelLimitError%';
 External fetch issues:
 select timestamp, user_uuid, campaign_uuid, message
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and campaign_uuid = 'campaign-uuid-here'
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and message like '%ExternalFetchError%'
 order by timestamp asc
@@ -1141,8 +1146,8 @@ Write the SQL query EXACTLY in this compact format - DO NOT break each column or
 
 select timestamp, user_uuid, campaign_uuid, message
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
-and file_date >= '2024-12-22'
+where account_uuid = 'client_account_uuid'
+and file_date >= '2024-12-01'
 and message like '%facebook%'
 order by timestamp desc
 limit 100
@@ -1255,10 +1260,12 @@ def parse_athena_analysis(ai_response, user_query):
 
         # Return the suggested query template for manual customization (no execution to avoid S3 permission issues)
         if sql_query.strip():
-            print(f"Generated SQL Query: {sql_query.strip()}")  # Debug output
+            # Ensure we use placeholder values instead of real data
+            safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)
+            print(f"Generated SQL Query: {safe_sql_query}")  # Debug output
             return {
                 'database': database_name,
-                'sql_query': sql_query.strip(),
+                'sql_query': safe_sql_query,
                 'explanation': explanation.strip() + "\n\n💡 Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
                 'results': {"note": "Query template ready for manual customization in Athena - no execution attempted to avoid S3 permission issues", "data": []},
                 'has_data': False

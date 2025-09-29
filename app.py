@@ -1095,22 +1095,47 @@ QUERY CONSTRUCTION GUIDELINES:
 SQL FORMATTING RULES:
 - No quotes around column names unless necessary
 - Use single quotes for string literals
-- Keep query on as few lines as possible for readability
+- Put each major clause on its own line for readability
 - Use OR for multiple message filters, not AND
-- Standard format: SELECT columns FROM table WHERE conditions ORDER BY timestamp DESC LIMIT number
+- End with semicolon
+- Standard format:
+  SELECT columns
+  FROM table
+  WHERE conditions
+  ORDER BY timestamp DESC
+  LIMIT number;
 
 EXAMPLE THOUGHT PROCESS:
 User asks: "campaign optimizer set up"
 → Key terms: optimizer, setup, configuration, variation
-→ Query: SELECT timestamp, user_uuid, campaign_uuid, message FROM customer_campaign_logs.campaign_execution_v3 WHERE account_uuid = 'your_account_uuid' AND (message LIKE '%optimizer%' OR message LIKE '%setup%' OR message LIKE '%variation%') ORDER BY timestamp DESC LIMIT 50
+→ Query:
+SELECT timestamp, user_uuid, campaign_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'your_account_uuid'
+AND (message LIKE '%optimizer%' OR message LIKE '%setup%' OR message LIKE '%variation%')
+ORDER BY timestamp DESC
+LIMIT 50;
 
 User asks: "why emails not sending"
 → Key terms: email, sending, delivery, failed
-→ Query: SELECT timestamp, user_uuid, campaign_uuid, message, log_level FROM customer_campaign_logs.campaign_execution_v3 WHERE account_uuid = 'your_account_uuid' AND log_level = 'ERROR' AND (message LIKE '%email%' OR message LIKE '%sending%' OR message LIKE '%delivery%') ORDER BY timestamp DESC LIMIT 50
+→ Query:
+SELECT timestamp, user_uuid, campaign_uuid, message, log_level
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'your_account_uuid'
+AND log_level = 'ERROR'
+AND (message LIKE '%email%' OR message LIKE '%sending%' OR message LIKE '%delivery%')
+ORDER BY timestamp DESC
+LIMIT 50;
 
 User asks: "channel limit errors"
 → Key terms: channel, limit, skip
-→ Query: SELECT timestamp, user_uuid, campaign_uuid, message FROM customer_campaign_logs.campaign_execution_v3 WHERE account_uuid = 'your_account_uuid' AND (message LIKE '%channel limit%' OR message LIKE '%skip%') ORDER BY timestamp DESC LIMIT 50
+→ Query:
+SELECT timestamp, user_uuid, campaign_uuid, message
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'your_account_uuid'
+AND (message LIKE '%channel limit%' OR message LIKE '%skip%')
+ORDER BY timestamp DESC
+LIMIT 50;
 
 Now generate a query specifically for: "{user_query}"
 

@@ -128,7 +128,7 @@ API_STATUS = validate_api_credentials_on_startup()
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Google Gemini API with system context and configuration.
     
-    CRITICAL FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
+    FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
     """
     if not AI_API_KEY:
         return "Error: GEMINI_API_KEY is not configured."
@@ -163,7 +163,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -219,7 +219,7 @@ When this feature isn't working as expected:
             "contents": contents_array,
             "generationConfig": { 
                 "temperature": temp, 
-                "maxOutputTokens": 4000  # CRITICAL FIX APPLIED HERE
+                "maxOutputTokens": 4000  # CRITICAL FIX: Increased capacity
             }
         }
         
@@ -753,9 +753,9 @@ def fetch_help_doc_content_improved(url, max_content_length=2000):
         return ""
 # --- END FIX 4 ---
 
-# --- FIX 1: Improved Validation Logic (Kept same) ---
+# --- CRITICAL FIX: TRULY LENIENT Validation Function ---
 def validate_search_results_improved(query, results, source_name):
-    """Much more lenient validation focused on actual relevance"""
+    """TRULY LENIENT validation - Accept most results unless entirely irrelevant."""
     if not results:
         return []
 
@@ -764,34 +764,27 @@ def validate_search_results_improved(query, results, source_name):
     validated_results = []
 
     # Remove only the most basic stop words
-    stop_words = {'the', 'a', 'an', 'and', 'or'}
+    stop_words = {'the', 'a', 'an'}
     clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
 
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
 
-        # MUCH MORE LENIENT criteria
-        should_include = False
+        # Set default to ACCEPT (the core fix)
+        should_include = True  
+        
+        # Check for ANY relevance at all
+        meaningful_matches = len([w for w in clean_query_words if w in title])
 
-        # 1. ANY word match in title (must be a clean word)
-        if any(word in title for word in clean_query_words):
-            should_include = True
+        # Only reject if ZERO matches AND no Blueshift terms
+        if meaningful_matches == 0:
+            # Expanded platform terms for better context matching
+            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence'}
+            has_blueshift = any(term in title for term in blueshift_terms)
 
-        # 2. Blueshift-related terms (always relevant if present)
-        platform_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'email', 'push', 'sms', 'bot', 'click', 'filtering'}
-        if any(term in title for term in platform_terms):
-            should_include = True
-
-        # 3. Troubleshooting terms (helpful for support)
-        support_terms = {'help', 'troubleshoot', 'debug', 'issue', 'problem', 'error', 'not', 'working', 'setup', 'configure'}
-        if any(term in clean_query_words for term in ['help', 'troubleshoot', 'debug', 'not', 'issue', 'bot', 'click']):
-            if any(term in title for term in support_terms):
-                should_include = True
-
-        # 4. If we have very few results, be even more lenient
-        if len(results) <= 2:
-            should_include = True
+            if not has_blueshift:
+                should_include = False  # Only reject if truly irrelevant
 
         if should_include and url:  # Must have valid URL
             validated_results.append(result)
@@ -801,7 +794,7 @@ def validate_search_results_improved(query, results, source_name):
             
     logger.info(f"{source_name} validation: {len(results)} → {len(validated_results)} results")
     return validated_results
-# --- END FIX 1 ---
+# --- END CRITICAL FIX ---
 
 def verify_step_extraction(query, resources_with_content):
     """Verify if actual step-by-step instructions exist in the content (kept for completeness)"""
@@ -1994,33 +1987,3 @@ MAIN_TEMPLATE = '''
 </body>
 </html>
 '''
-
-if __name__ == '__main__':
-    print("Starting Blueshift Support Bot with AWS Athena Integration...")
-    port = int(os.environ.get('PORT', 8103))
-    print(f"Visit: http://localhost:{port}")
-    print(f"AWS Region: {AWS_REGION}")
-    print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
-    print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
-
-    # Debug: Check environment variables
-    print(f"\n=== Environment Variables Debug ===")
-    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
-    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
-    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
-    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
-    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
-    print("=" * 40)
-    
-    # Print API status results
-    print("\n=== External API Status ===")
-    for api, status in API_STATUS.items():
-        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
-    print("=" * 40)
-
-    # ADDED Diagnostic Print Statement
-    print("--- ATTEMPTING TO START FLASK APP ---")
-
-    app.run(host='0.0.0.0', port=port, debug=True)

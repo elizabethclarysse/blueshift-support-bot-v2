@@ -1084,7 +1084,8 @@ where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 and campaign_uuid = 'campaign-uuid-here'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
-order by timestamp asc;
+order by timestamp asc
+limit 100;
 
 Error investigation:
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
@@ -1093,7 +1094,8 @@ where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 and campaign_uuid = 'campaign-uuid-here'
 and file_date >= '2024-12-01'
 and log_level = 'ERROR'
-order by timestamp asc;
+order by timestamp asc
+limit 100;
 
 Channel limit errors:
 select count(distinct(user_uuid))
@@ -1111,7 +1113,8 @@ where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 and campaign_uuid = 'campaign-uuid-here'
 and file_date >= '2024-12-01'
 and message like '%ExternalFetchError%'
-order by timestamp asc;
+order by timestamp asc
+limit 100;
 
 USER JOURNEY ANALYSIS:
 For questions about specific users, campaigns, or features, generate queries that:
@@ -1120,7 +1123,13 @@ For questions about specific users, campaigns, or features, generate queries tha
 - Include relevant message filters for the feature/issue
 - Order by timestamp asc for chronological analysis
 
-RULES:
+FORMATTING RULES:
+- Each major SQL clause on its own line: SELECT on line 1, FROM on line 2, WHERE on line 3, etc.
+- Use lowercase keywords: select, from, where, and, order by, limit
+- No semicolon at the end
+- Clean readable format with proper line breaks
+
+QUERY RULES:
 - Always use account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
 - Always include file_date filter (file_date >= 'YYYY-MM-DD')
 - Use file_date < for end ranges when appropriate
@@ -1129,7 +1138,7 @@ RULES:
 - Include campaign_uuid = 'placeholder' when campaign-specific
 - Include user_uuid = 'placeholder' when user-specific
 - Order by timestamp asc for journey analysis, desc for recent events
-- Limit to 50-100 for performance
+- Always end with limit 100
 
 Generate a query specifically for: "{user_query}"
 

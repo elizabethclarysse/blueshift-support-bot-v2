@@ -2240,7 +2240,7 @@ MAIN_TEMPLATE = '''
                 }
 
                 // Show response with conversational prompt
-                const responseWithPrompt = data.response + '\n\n---\n\n💬 **Does this help resolve your issue?** Feel free to ask me for more details or clarification!';
+                const responseWithPrompt = data.response + '\n\n---\n\nDoes this help resolve your issue? Feel free to ask me for more details or clarification!';
                 document.getElementById('responseContent').textContent = responseWithPrompt;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';

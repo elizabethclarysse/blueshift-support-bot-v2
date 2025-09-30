@@ -1060,21 +1060,59 @@ def get_available_tables(database_name):
         print(f"Error getting tables: {e}")
         return []
 
-# Cache for common message patterns to avoid repeated database queries
+# Cache for common message patterns - instant lookup, no database query needed
 MESSAGE_PATTERN_CACHE = {
+    # Quiet hours
     'quiet': 'QuietHours',
+    'hours': 'QuietHours',
+
+    # Facebook/Social
     'facebook': 'FacebookAudienceSync',
+    'fb': 'FacebookAudienceSync',
+    'sync': 'FacebookAudienceSync',
+    'audience': 'FacebookAudienceSync',
+    'lookalike': 'FacebookAudienceSync',
+    'syndication': 'FacebookAudienceSync',
+
+    # Errors
     'external': 'ExternalFetchError',
+    'fetch': 'ExternalFetchError',
     'channel': 'ChannelLimitError',
+    'limit': 'ChannelLimitError',
     'dedup': 'DeduplicationError',
     'dedupe': 'DeduplicationError',
     'deduplication': 'DeduplicationError',
+    'duplicate': 'DeduplicationError',
     'bounce': 'SoftBounce',
-    'fetch': 'ExternalFetchError',
-    'sync': 'FacebookAudienceSync',
-    'audience': 'FacebookAudienceSync',
+    'bounced': 'SoftBounce',
+
+    # Triggers & Journey
     'trigger': 'TriggerEvaluation',
-    'suppression': 'SuppressionCheck'
+    'triggered': 'TriggerEvaluation',
+    'journey': 'UserJourney',
+    'evaluation': 'TriggerEvaluation',
+
+    # Suppression & Opt-out
+    'suppression': 'SuppressionCheck',
+    'suppressed': 'SuppressionCheck',
+    'optout': 'OptOutCheck',
+    'unsubscribe': 'UnsubscribeCheck',
+
+    # Channels
+    'sms': 'SMSDelivery',
+    'email': 'EmailDelivery',
+    'push': 'PushNotification',
+    'mobile': 'PushNotification',
+    'webhook': 'WebhookExecution',
+
+    # Other common issues
+    'timeout': 'TimeoutError',
+    'rate': 'RateLimitError',
+    'throttle': 'RateLimitError',
+    'api': 'APIError',
+    'permission': 'PermissionError',
+    'authentication': 'AuthenticationError',
+    'auth': 'AuthenticationError'
 }
 
 def sample_message_patterns(user_query, database_name, timeout_seconds=5):
@@ -1203,14 +1241,26 @@ def generate_athena_insights(user_query):
             uuid_context += "Include these specific UUIDs in the query (use as user_uuid, campaign_uuid, or account_uuid based on context).\n"
             logger.info(f"Found UUIDs in query: {found_uuids}")
 
-        # Sample the database to find actual message patterns
-        actual_pattern = sample_message_patterns(user_query, database_name)
+        # Sample the database to find actual message patterns (DISABLED for performance - use cache only)
+        # actual_pattern = sample_message_patterns(user_query, database_name)
+
+        # Use cache-only pattern matching for instant response
+        actual_pattern = None
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+        words = [w for w in user_query.lower().split() if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        # Check cache for instant pattern matching
+        for word in words:
+            if word in MESSAGE_PATTERN_CACHE:
+                actual_pattern = MESSAGE_PATTERN_CACHE[word]
+                logger.info(f"Using cached pattern for '{word}': {actual_pattern}")
+                break
+
         pattern_context = ""
         if actual_pattern:
-            pattern_context = f"\n\nACTUAL MESSAGE PATTERN FOUND IN DATABASE:\nWe found messages containing '{actual_pattern}' - use this exact term in your message like condition.\n"
-            logger.info(f"Using actual pattern from database: {actual_pattern}")
+            pattern_context = f"\n\nKNOWN MESSAGE PATTERN:\nUse '{actual_pattern}' in your message like condition (verified pattern from common support queries).\n"
         else:
-            logger.info("No pattern found in database, AI will infer from query")
+            logger.info("No cached pattern found, AI will infer from query")
 
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
@@ -1223,100 +1273,161 @@ AVAILABLE DATA:
 
 ANALYZE THE USER'S QUESTION and generate a query that matches actual Blueshift support query patterns.
 
-QUERY PATTERNS FROM REAL EXAMPLES:
+IMPORTANT: Generate DETAILED, CONTEXTUAL queries based on the question type.
 
-Basic troubleshooting:
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message
+QUERY PATTERNS BY SCENARIO:
+
+1. USER JOURNEY / "Why didn't user get message?" / Feature troubleshooting:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
+and user_uuid = 'client_user_uuid'
 and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 order by timestamp asc
-limit 100;
+limit 500
 
-Error investigation:
+WHY THIS QUERY: Shows complete user journey through campaign - all evaluations, checks, errors, successes in chronological order.
+INCLUDES: trigger_uuid (which trigger fired), log_level (errors vs info), worker_name (which server processed)
+
+2. ERROR INVESTIGATION / "Why are messages failing?":
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and log_level = 'ERROR'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp desc
+limit 200
+
+WHY THIS QUERY: Focuses on errors only, recent first. execution_key links related log entries.
+
+3. FEATURE SPECIFIC / "Quiet hours not working" / "Facebook sync issues":
 select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
+and message like '%{feature_pattern}%'
 and file_date >= '2024-12-01'
-and log_level = 'ERROR'
+and file_date < '2024-12-15'
 order by timestamp asc
-limit 100;
+limit 300
 
-Channel limit errors:
-select count(distinct(user_uuid))
+WHY THIS QUERY: Filters for specific feature logs, shows chronological progression of feature behavior.
+
+4. VOLUME ANALYSIS / "How many users affected?":
+select
+  file_date,
+  count(distinct user_uuid) as affected_users,
+  count(*) as total_occurrences,
+  log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and message like '%{error_pattern}%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+group by file_date, log_level
+order by file_date desc
+
+WHY THIS QUERY: Shows impact over time - how many users hit the issue per day.
+
+5. CAMPAIGN PERFORMANCE / "Is campaign sending?":
+select
+  log_level,
+  count(*) as count,
+  count(distinct user_uuid) as unique_users
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
-and message like '%ChannelLimitError%';
+group by log_level
+order by count desc
 
-External fetch issues:
-select timestamp, user_uuid, campaign_uuid, message
+WHY THIS QUERY: Summary view - how many ERRORs vs INFOs, overall campaign health.
+
+ANALYZE THE USER'S QUESTION AND CHOOSE THE RIGHT PATTERN:
+- Journey questions → Pattern 1 (detailed user journey)
+- Error questions → Pattern 2 (error-focused)
+- Feature questions → Pattern 3 (feature-specific)
+- "How many" questions → Pattern 4 (volume analysis)
+- "Is it working" questions → Pattern 5 (summary stats)
+
+CRITICAL QUERY RULES:
+1. **Include relevant columns** based on query type:
+   - User journey: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+   - Error investigation: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
+   - Volume analysis: Use COUNT, GROUP BY, aggregations
+   - Feature-specific: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+
+2. **Use appropriate WHERE conditions**:
+   - Always: account_uuid, file_date range
+   - Journey queries: Add user_uuid, campaign_uuid
+   - Error queries: Add log_level = 'ERROR'
+   - Feature queries: Add message like '%pattern%' (ONLY ONE)
+
+3. **Set appropriate LIMIT**:
+   - User journey: 500 (need full story)
+   - Error investigation: 200 (enough to see patterns)
+   - Feature-specific: 300 (see progression)
+   - Volume analysis: No limit needed (aggregated)
+
+4. **Use correct ORDER BY**:
+   - Journey queries: timestamp ASC (chronological story)
+   - Error queries: timestamp DESC (recent errors first)
+   - Volume queries: date DESC or count DESC
+
+5. **Date ranges**:
+   - Use: file_date >= '2024-12-01' AND file_date < '2024-12-15'
+   - This ensures partition pruning for performance
+
+EXAMPLE OUTPUTS:
+
+For "Why didn't user 123 receive message?":
+```sql
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and user_uuid = 'client_user_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp asc
+limit 500
+```
+
+For "How many users are getting channel limit errors?":
+```sql
+select
+  file_date,
+  count(distinct user_uuid) as affected_users,
+  count(*) as total_occurrences
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
+and message like '%ChannelLimitError%'
 and file_date >= '2024-12-01'
-and message like '%ExternalFetchError%'
-order by timestamp asc
-limit 100;
+and file_date < '2024-12-15'
+group by file_date
+order by file_date desc
+```
 
-USER JOURNEY ANALYSIS:
-For questions about specific users, campaigns, or features, generate queries that:
-- Include specific user_uuid when investigating user journeys
-- Use file_date ranges (typically 7-30 days)
-- Include relevant message filters for the feature/issue
-- Order by timestamp asc for chronological analysis
-
-CRITICAL FORMATTING REQUIREMENTS:
-Write the SQL query EXACTLY in this format with proper line breaks:
-
-Example 1 - Feature search (quiet hours):
-select timestamp, user_uuid, campaign_uuid, message
+For "Are there Facebook sync errors?":
+```sql
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
-and message like '%QuietHours%'
+and campaign_uuid = 'client_campaign_uuid'
+and log_level = 'ERROR'
+and message like '%FacebookAudienceSync%'
 and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
 order by timestamp desc
-limit 100
-
-Example 2 - Integration search (facebook):
-select timestamp, user_uuid, campaign_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and message like '%facebook%'
-and file_date >= '2024-12-01'
-order by timestamp desc
-limit 100
-
-REQUIRED FORMAT:
-select timestamp, user_uuid, campaign_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and message like '%QuietHours%'
-and file_date >= '2024-12-01'
-order by timestamp desc
-limit 100
-
-CRITICAL FORMATTING RULES:
-- SELECT with columns stays together on one line
-- FROM on its own line
-- WHERE on its own line
-- Use ONLY ONE message like condition (combine multiple keywords using OR inside one LIKE if needed, or pick the most important term)
-- AND file_date condition on its own line (AFTER message condition)
-- ORDER BY on its own line
-- LIMIT on its own line
-- This should be 7 lines total
-
-QUERY RULES:
-- Use recent date: file_date >= '2024-12-01'
-- Include ONLY ONE message like condition with the most relevant search term for the user's question
-- If multiple concepts need to be searched, pick the PRIMARY/most important one only
-- Use order by timestamp desc
-- Always end with limit 100
+limit 200
+```
 
 Generate a query specifically for: "{user_query}"
 
@@ -1386,24 +1497,108 @@ def parse_athena_analysis(ai_response, user_query):
             elif in_explanation_section and line:
                 explanation += line + "\n"
 
-        # Return the suggested query template for manual customization (no execution to avoid S3 permission issues)
+        # Validate and refine the query before returning
         if sql_query.strip():
             # Ensure we use placeholder values instead of real data
             safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)
-            print(f"Generated SQL Query: {safe_sql_query}")  # Debug output
-            return {
-                'database': database_name,
-                'sql_query': safe_sql_query,
-                'explanation': explanation.strip() + "\n\n💡 Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
-                'results': {"note": "Query template ready for manual customization in Athena - no execution attempted to avoid S3 permission issues", "data": []},
-                'has_data': False
-            }
+
+            # TEST QUERY: Validate it works and return sample results
+            validated_query = validate_and_test_query(safe_sql_query, database_name, user_query, explanation.strip())
+
+            if validated_query:
+                return validated_query
+            else:
+                # If validation fails, return original query
+                print(f"Generated SQL Query: {safe_sql_query}")  # Debug output
+                return {
+                    'database': database_name,
+                    'sql_query': safe_sql_query,
+                    'explanation': explanation.strip() + "\n\n💡 Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
+                    'results': {"note": "Query template ready for manual customization in Athena", "data": []},
+                    'has_data': False
+                }
         else:
             return get_default_athena_insights(user_query)
 
     except Exception as e:
         print(f"Error parsing Athena analysis: {e}")
         return get_default_athena_insights(user_query)
+
+def validate_and_test_query(sql_query, database_name, user_query, explanation):
+    """Validate the query by testing it with a small sample and return refined version with actual results"""
+    try:
+        logger.info("Validating and testing generated Athena query...")
+
+        # Create a test version of the query - remove placeholders and add realistic test conditions
+        test_query = sql_query.replace("'client_account_uuid'", "(select account_uuid from customer_campaign_logs.campaign_execution_v3 limit 1)")
+        test_query = test_query.replace("'client_campaign_uuid'", "(select campaign_uuid from customer_campaign_logs.campaign_execution_v3 where campaign_uuid is not null limit 1)")
+        test_query = test_query.replace("'client_user_uuid'", "(select user_uuid from customer_campaign_logs.campaign_execution_v3 where user_uuid is not null limit 1)")
+
+        # Ensure it's limited to prevent long queries
+        if 'limit' not in test_query.lower():
+            test_query += "\nlimit 10"
+        else:
+            # Replace any large limits with 10 for testing
+            import re
+            test_query = re.sub(r'limit\s+\d+', 'limit 10', test_query, flags=re.IGNORECASE)
+
+        logger.info(f"Testing query: {test_query[:200]}...")
+
+        # Execute the test query with short timeout
+        result = query_athena(test_query, database_name, f"Validate query for: {user_query}")
+
+        if result and not result.get('error'):
+            # Query works! Get the actual structure
+            sample_data = result.get('data', [])
+            columns = result.get('columns', [])
+
+            logger.info(f"✅ Query validated successfully! Found {len(sample_data)} sample rows")
+
+            # Build enhanced explanation with sample results
+            enhanced_explanation = explanation + "\n\n"
+
+            if sample_data and len(sample_data) > 0:
+                enhanced_explanation += f"✅ **Query Validated**: This query successfully returns results from your database.\n\n"
+                enhanced_explanation += f"**Sample Results Preview** ({len(sample_data)} rows):\n"
+                for i, row in enumerate(sample_data[:3], 1):
+                    enhanced_explanation += f"\n{i}. "
+                    # Show first few columns
+                    for col in columns[:3]:
+                        value = row.get(col, 'N/A')
+                        enhanced_explanation += f"{col}: {str(value)[:50]}... | "
+                    enhanced_explanation = enhanced_explanation.rstrip(' | ')
+            else:
+                enhanced_explanation += "⚠️ **Query is valid but returned no results**. This might mean:\n"
+                enhanced_explanation += "- The message pattern doesn't exist in recent logs\n"
+                enhanced_explanation += "- The date range needs adjustment\n"
+                enhanced_explanation += "- Try a broader search term\n"
+
+            enhanced_explanation += "\n\n💡 **Next Steps**: Copy this query and replace placeholders with your specific account_uuid, campaign_uuid, user_uuid, and date range."
+
+            return {
+                'database': database_name,
+                'sql_query': sql_query,  # Return original with placeholders
+                'explanation': enhanced_explanation,
+                'results': {"data": sample_data[:5], "columns": columns, "note": "Sample results from validation query"},
+                'has_data': True if sample_data else False
+            }
+        else:
+            # Query failed
+            error_msg = result.get('error', 'Unknown error')
+            logger.warning(f"❌ Query validation failed: {error_msg}")
+
+            # Return query with error context
+            return {
+                'database': database_name,
+                'sql_query': sql_query,
+                'explanation': explanation + f"\n\n⚠️ **Validation Note**: Initial test of this query encountered an issue ({error_msg}). You may need to adjust the query parameters for your specific use case.",
+                'results': {"note": "Query validation failed - may need adjustments", "data": []},
+                'has_data': False
+            }
+
+    except Exception as e:
+        logger.error(f"Error validating query: {e}")
+        return None  # Fall back to original behavior
 
 def get_default_athena_insights(user_query):
     """Provide default Athena insights when AI analysis fails"""

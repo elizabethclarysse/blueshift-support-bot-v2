@@ -2144,12 +2144,10 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
-            <div class="followup-section">
-                <h4>Have a follow-up question?</h4>
-                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
+            <div class="followup-section" style="margin-top: 0; padding-top: 0; border-top: none;">
                 <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
-                    <button id="followupBtn">Ask</button>
+                    <input type="text" id="followupInput" placeholder="Does this help? Or ask me another question..." />
+                    <button id="followupBtn">Send</button>
                 </div>
                 <div id="followupResponse" class="followup-response"></div>
             </div>
@@ -2241,8 +2239,9 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response
-                document.getElementById('responseContent').textContent = data.response;
+                // Show response with conversational prompt
+                const responseWithPrompt = data.response + '\n\n---\n\n💬 **Does this help resolve your issue?** Feel free to ask me for more details or clarification!';
+                document.getElementById('responseContent').textContent = responseWithPrompt;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');

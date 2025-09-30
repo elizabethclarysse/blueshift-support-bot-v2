@@ -2419,13 +2419,13 @@ MAIN_TEMPLATE = '''
                 .replace(/>/g, '&gt;');
 
             // Convert markdown bold **text** to HTML <strong>text</strong>
-            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1<\/strong>');
 
             // Convert ## headers to HTML headers
-            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1</h3>');
+            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1<\/h3>');
 
             // Convert ### headers to HTML headers
-            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1</h4>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1<\/h4>');
 
             // Convert line breaks to <br>
             formatted = formatted.replace(/\n/g, '<br>');

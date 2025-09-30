@@ -508,7 +508,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             params = {
                 "cql": cql,
                 "limit": limit * 10,   # pull more for debugging
-                "expand": "_links.webui,body.storage"
+                "expand": "_links.webui"
             }
             resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
             resp.raise_for_status()
@@ -577,48 +577,30 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
              logger.info("No Confluence results found with any query variant")
              return []
 
-        # --- Re-rank: prioritize title matches heavily, but also consider content ---
+        # --- Re-rank: prioritize title matches heavily ---
         def score_fn(r):
             api_score = r.get("score", 0) or 0
             title = (r.get("title") or "").lower()
             query_lower = query.lower()
-
-            # Get body content if available
-            body_text = ""
-            if "body" in r and "storage" in r["body"]:
-                body_text = r["body"]["storage"].get("value", "").lower()
 
             score = api_score * 100
 
             # Exact phrase in title = huge boost
             if query_lower in title:
                 score += 1000
-            # Exact phrase in content = good boost
-            elif query_lower in body_text:
-                score += 300
 
-            # Check if all clean words appear in title or content
+            # Check if all clean words appear in title
             title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
-            content_word_matches = sum(1 for word in clean_query_words if word.lower() in body_text)
 
             # All words in title = major boost
             if title_word_matches == len(clean_query_words):
                 score += 500
-            # All words in content = moderate boost
-            elif content_word_matches == len(clean_query_words):
-                score += 200
             # At least 2 words in title for multi-word queries
             elif len(clean_query_words) > 1 and title_word_matches >= 2:
                 score += title_word_matches * 100
-            # At least 2 words in content
-            elif len(clean_query_words) > 1 and content_word_matches >= 2:
-                score += content_word_matches * 40
-            # Single word match in title
+            # Single word match gets moderate boost
             elif title_word_matches >= 1:
                 score += title_word_matches * 50
-            # Single word match in content
-            elif content_word_matches >= 1:
-                score += content_word_matches * 20
 
             return score
 

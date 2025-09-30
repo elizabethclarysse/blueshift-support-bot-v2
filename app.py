@@ -508,7 +508,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             params = {
                 "cql": cql,
                 "limit": limit * 10,   # pull more for debugging
-                "expand": "content"
+                "expand": "_links.webui"
             }
             resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
             resp.raise_for_status()
@@ -592,33 +592,25 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Format results ---
         formatted = []
         for r in ranked[:limit]:
-            # Try multiple ways to get the page ID due to different Confluence API response formats
-            page_id = r.get("content", {}).get("id") or r.get("id")
             title = r.get("title") or "Untitled"
 
-            # Debug log the structure of results that don't have page_id
-            if not page_id:
-                logger.warning(f"Confluence result missing page_id: {r.keys()} - title: {title}")
-                # Try to construct URL using other fields if available
-                if "url" in r:
-                    page_url = r["url"]
-                elif "_links" in r and "webui" in r["_links"]:
-                    webui_path = r['_links']['webui']
-                    # Ensure proper URL construction
-                    base_url = CONFLUENCE_URL.rstrip('/wiki').rstrip('/')
-                    page_url = f"{base_url}{webui_path}"
-                else:
-                    continue  # Skip if we can't get a URL
+            # Priority 1: Use _links.webui (most reliable for Confluence Cloud)
+            if "_links" in r and "webui" in r["_links"]:
+                webui_path = r['_links']['webui']
+                # webui_path already includes /wiki, so we need the base domain
+                base_url = CONFLUENCE_URL.split('/wiki')[0]
+                page_url = f"{base_url}{webui_path}"
+            # Priority 2: Use direct URL if provided
+            elif "url" in r:
+                page_url = r["url"]
+            # Priority 3: Construct from page ID
             else:
-                # Use Confluence Cloud URL format: /wiki/spaces/SPACE/pages/PAGEID/Title
-                # But first try to get the direct link from _links if available
-                if "_links" in r and "webui" in r["_links"]:
-                    webui_path = r['_links']['webui']
-                    base_url = CONFLUENCE_URL.rstrip('/wiki').rstrip('/')
-                    page_url = f"{base_url}{webui_path}"
-                else:
-                    # Fallback to direct page ID URL (works in most Confluence Cloud instances)
-                    page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+                page_id = r.get("content", {}).get("id") or r.get("id")
+                if not page_id:
+                    logger.warning(f"Confluence result missing page_id and _links: {r.keys()} - title: {title}")
+                    continue  # Skip if we can't get a URL
+                # Use simple page ID format as last resort
+                page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
 
             formatted.append({"title": title, "url": page_url})
 

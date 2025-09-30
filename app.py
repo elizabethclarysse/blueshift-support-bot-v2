@@ -527,25 +527,25 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Build queries progressively ---
         cql_variants = []
 
-        # 1. Exact phrase (standard fields)
-        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
+        # 1. Exact phrase (standard fields) - only pages
+        cql_variants.append(f'type = page AND (text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\"")')
 
-        # 2. Clean words AND (standard fields)
+        # 2. Clean words AND (standard fields) - only pages
         if len(clean_query_words) > 1:
             and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            cql_variants.append(" AND ".join(and_parts))
+            cql_variants.append(f'type = page AND ({" AND ".join(and_parts)})')
 
-        # 3. Clean words OR (standard fields)
+        # 3. Clean words OR (standard fields) - only pages
         or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         or_parts.append(f'content ~ "{query}"')
-        cql_variants.append(" OR ".join(or_parts))
+        cql_variants.append(f'type = page AND ({" OR ".join(or_parts)})')
 
 
-        # 4. Single most important word (if we have multiple)
+        # 4. Single most important word (if we have multiple) - only pages
         if len(clean_query_words) > 1:
             # Use longest word as most likely to be significant
             main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
+            cql_variants.append(f'type = page AND (title ~ "{main_word}" OR text ~ "{main_word}")')
 
         # Add space filter if provided
         if space_key:
@@ -594,15 +594,20 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         for r in ranked[:limit]:
             title = r.get("title") or "Untitled"
 
+            # Debug: log the full result structure
+            logger.info(f"Processing Confluence result: keys={r.keys()}, _links={r.get('_links', 'MISSING')}")
+
             # Priority 1: Use _links.webui (most reliable for Confluence Cloud)
             if "_links" in r and "webui" in r["_links"]:
                 webui_path = r['_links']['webui']
                 # webui_path already includes /wiki, so we need the base domain
                 base_url = CONFLUENCE_URL.split('/wiki')[0]
                 page_url = f"{base_url}{webui_path}"
+                logger.info(f"Using _links.webui: {page_url}")
             # Priority 2: Use direct URL if provided
             elif "url" in r:
                 page_url = r["url"]
+                logger.info(f"Using direct URL: {page_url}")
             # Priority 3: Construct from page ID
             else:
                 page_id = r.get("content", {}).get("id") or r.get("id")
@@ -611,6 +616,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
                     continue  # Skip if we can't get a URL
                 # Use simple page ID format as last resort
                 page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
+                logger.info(f"Using page_id fallback: {page_url}")
 
             formatted.append({"title": title, "url": page_url})
 

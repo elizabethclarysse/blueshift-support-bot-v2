@@ -196,7 +196,7 @@ When this feature isn't working as expected:
    - Configuration errors to look for
    - Data flow issues to investigate
 
-3. **Advanced Debugging**
+3. **Advanced Debugbing**
    - Database queries: customer_campaign_logs.campaign_execution_v3
    - Error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
    - API endpoints to test

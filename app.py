@@ -1144,9 +1144,11 @@ def get_available_tables(database_name):
 
 # Cache for common message patterns - instant lookup, no database query needed
 MESSAGE_PATTERN_CACHE = {
-    # Quiet hours
+    # Quiet hours & Dayparting
     'quiet': 'QuietHours',
     'hours': 'QuietHours',
+    'dayparting': 'OutsideDayparting',
+    'daypart': 'OutsideDayparting',
 
     # Facebook/Social
     'facebook': 'FacebookAudienceSync',
@@ -1156,7 +1158,7 @@ MESSAGE_PATTERN_CACHE = {
     'lookalike': 'FacebookAudienceSync',
     'syndication': 'FacebookAudienceSync',
 
-    # Errors
+    # Common Errors
     'external': 'ExternalFetchError',
     'fetch': 'ExternalFetchError',
     'channel': 'ChannelLimitError',
@@ -1165,14 +1167,39 @@ MESSAGE_PATTERN_CACHE = {
     'dedupe': 'DeduplicationError',
     'deduplication': 'DeduplicationError',
     'duplicate': 'DeduplicationError',
-    'bounce': 'SoftBounce',
-    'bounced': 'SoftBounce',
+    'bounce': 'soft_bounce',
+    'bounced': 'soft_bounce',
+    'soft': 'soft_bounce',
+
+    # Messaging & Remessaging Errors
+    'remessaging': 'RemessagingError',
+    'remessage': 'RemessagingError',
+    'timeout': 'RemessagingError',
+    'whitelist': 'UserNotWhitelistedError',
+    'whitelisted': 'UserNotWhitelistedError',
+
+    # Campaign Errors
+    'inactive': 'InactiveCampaignError',
+    'firefly': 'FireflyError',
+    'assertion': 'FireflyError',
+    'concurrency': 'JourneyConcurrencyError',
+    'concurrent': 'JourneyConcurrencyError',
+
+    # Recommendation Errors
+    'recommendation': 'NotEnoughRecommendationProductsError',
+    'recommendations': 'NotEnoughRecommendationProductsError',
+    'products': 'NotEnoughRecommendationProductsError',
+    'personalization': 'NotEnoughRecommendationProductsError',
 
     # Triggers & Journey
     'trigger': 'TriggerEvaluation',
     'triggered': 'TriggerEvaluation',
     'journey': 'UserJourney',
     'evaluation': 'TriggerEvaluation',
+    'skipping': 'skipping',
+    'dispatched': 'dispatched',
+    'deferred': 'deferred',
+    'holdout': 'holdout',
 
     # Suppression & Opt-out
     'suppression': 'SuppressionCheck',
@@ -1180,12 +1207,14 @@ MESSAGE_PATTERN_CACHE = {
     'optout': 'OptOutCheck',
     'unsubscribe': 'UnsubscribeCheck',
 
-    # Channels
-    'sms': 'SMSDelivery',
-    'email': 'EmailDelivery',
+    # Channels & Sending
+    'sms': 'sending SMS',
+    'email': 'sending email',
     'push': 'PushNotification',
     'mobile': 'PushNotification',
     'webhook': 'WebhookExecution',
+    'sending': 'sending',
+    'send': 'send',
 
     # Other common issues
     'timeout': 'TimeoutError',
@@ -1511,7 +1540,77 @@ order by timestamp desc
 limit 200
 ```
 
+For "Why is external fetch failing?":
+```sql
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and log_level = 'ERROR'
+and message like '%ExternalFetchError%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp desc
+limit 200
+```
+
+For "Soft bounce analysis":
+```sql
+SELECT
+    json_extract_scalar(message, '$.action') AS action,
+    json_extract_scalar(message, '$.email') AS email,
+    json_extract_scalar(message, '$.reason') AS reason,
+    json_extract_scalar(message, '$.status') AS status,
+    timestamp
+FROM customer_campaign_logs.campaign_execution_v3
+WHERE account_uuid = 'client_account_uuid'
+AND campaign_uuid = 'client_campaign_uuid'
+AND file_date >= '2024-12-01'
+AND file_date < '2024-12-15'
+AND message LIKE '%soft_bounce%'
+ORDER BY timestamp DESC
+LIMIT 200
+```
+
+For "Count affected users with specific error":
+```sql
+select count(distinct user_uuid) as affected_users
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+and message like '%ChannelLimitError%'
+```
+
+For "Errors excluding certain types":
+```sql
+select timestamp, user_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+and log_level = 'ERROR'
+and message not like '%RemessagingError%'
+and message not like '%UserNotWhitelistedError%'
+order by timestamp asc
+```
+
 Generate a query specifically for: "{user_query}"
+
+**CRITICAL INSTRUCTIONS:**
+1. **ALWAYS use KNOWN MESSAGE PATTERN if provided** - add: and message like '%PatternName%'
+2. **For error questions** - add: and log_level = 'ERROR'
+3. **For count questions** - use: select count(distinct user_uuid)
+4. **For specific columns** - only select what's needed (don't always use *)
+5. **For JSON extraction** - use: json_extract_scalar(message, '$.field_name') AS field_name
+6. **For excluding errors** - use: and message not like '%ErrorType%' (can have multiple)
+7. **Use appropriate columns based on query type:**
+   - User journey: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+   - Error investigation: timestamp, user_uuid, message, log_level, execution_key
+   - Volume analysis: count(distinct user_uuid), file_date, log_level
+   - JSON extraction: json_extract_scalar fields, timestamp
 
 Format your response as:
 DATABASE: {database_name}

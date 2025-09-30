@@ -2451,8 +2451,12 @@ MAIN_TEMPLATE = '''
                 }
 
                 // Show follow-up suggestions if available
+                console.log('Suggested followups:', data.suggested_followups);
                 if (data.suggested_followups && data.suggested_followups.length > 0) {
+                    console.log('Showing followup suggestions');
                     showFollowupSuggestions(data.suggested_followups);
+                } else {
+                    console.log('No followup suggestions to show');
                 }
 
                 // Reset button

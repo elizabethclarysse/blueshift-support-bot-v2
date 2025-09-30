@@ -2408,31 +2408,14 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
-        // Function to convert markdown formatting to HTML
         function formatMarkdownResponse(text) {
             if (!text) return '';
-
-            // Escape HTML to prevent XSS
-            let formatted = text
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-
-            // Convert markdown bold **text** to HTML <strong>text</strong>
-            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1<\/strong>');
-
-            // Convert ## headers to HTML headers
-            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1<\/h3>');
-
-            // Convert ### headers to HTML headers
-            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1<\/h4>');
-
-            // Convert line breaks to <br>
+            var formatted = text;
+            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1<' + '/strong>');
+            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1<' + '/h3>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1<' + '/h4>');
             formatted = formatted.replace(/\n/g, '<br>');
-
-            // Convert bullet points (- item) to actual list items
             formatted = formatted.replace(/^- (.+)$/gm, '&nbsp;&nbsp;• $1');
-
             return formatted;
         }
 

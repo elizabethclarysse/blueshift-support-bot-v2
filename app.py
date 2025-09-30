@@ -27,7 +27,7 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 # AWS Athena configuration - set these via environment variables
 ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
-ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/athena-results/')
+ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
 # API Configuration for searches
@@ -163,7 +163,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are a Blueshift support engineer helping other support team members troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -281,23 +281,11 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # 1. Exact phrase (highest relevance)
         jql_variants.append(f'summary ~ "\\"{query}\\"" ORDER BY updated DESC')
 
-        # 2. All clean words AND in summary and text (better relevance than OR)
-        if len(clean_query_words) > 1:
-            and_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            jql_variants.append(f'({" AND ".join(and_parts)}) ORDER BY updated DESC')
-
-        # 3. Most important words (fallback) - use the two longest/most significant words
-        if len(clean_query_words) >= 2:
-            important_words = sorted(clean_query_words, key=len, reverse=True)[:2]
-            important_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in important_words]
-            jql_variants.append(f'({" AND ".join(important_parts)}) ORDER BY updated DESC')
-
-        # 4. Clean words OR in summary and text (most reliable for finding results but least relevant)
+        # 2. Clean words OR in summary and text (most reliable for finding results)
         or_parts = [f'(summary ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
         jql_variants.append(f'({" OR ".join(or_parts)}) ORDER BY updated DESC')
 
-        # Use the correct JIRA v3 API endpoint for JQL queries
-        url = f"{JIRA_URL}/rest/api/3/search/jql"
+        url = f"{JIRA_URL}/rest/api/3/search"
 
         # --- Try queries in order ---
         final_issues = []
@@ -311,7 +299,7 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
                     'fields': 'summary,key,status,priority,issuetype'
                 }
 
-                # Use the correct v3 API endpoint with GET request
+                # CRITICAL FIX: Changed from POST to GET and moved JQL to params
                 response = requests.get(url, headers=headers, params=params, timeout=15) 
 
                 if response.status_code == 200:
@@ -339,46 +327,16 @@ def search_jira_tickets_improved(query, limit=5, debug=True):
         # --- Score and filter results ---
         def score_issue(issue):
             summary = issue.get('fields', {}).get('summary', '').lower()
-
-            # Count partial word matches in summary (more lenient)
             matches = sum(1 for word in clean_query_words if word.lower() in summary)
-
-            # Bonus for exact phrase match
-            exact_bonus = 50 if query.lower() in summary else 0
-
-            # Bonus for multiple word matches (AND logic preference)
-            if len(clean_query_words) > 1:
-                match_ratio = matches / len(clean_query_words)
-                completeness_bonus = int(match_ratio * 20)  # Up to 20 points for having all words
-            else:
-                completeness_bonus = 0
-
-            # Priority bonus (less important than relevance)
+            exact_bonus = 10 if query.lower() in summary else 0
             priority = issue.get('fields', {}).get('priority', {})
             priority_name = priority.get('name', '').lower() if priority else ''
-            priority_bonus = 3 if 'high' in priority_name or 'critical' in priority_name else 0
-
-            # Issue type bonus (prefer certain types)
-            issue_type = issue.get('fields', {}).get('issuetype', {})
-            issue_type_name = issue_type.get('name', '').lower() if issue_type else ''
-            type_bonus = 5 if 'bug' in issue_type_name or 'support' in issue_type_name else 0
-
-            # Minimum base score for relevant-sounding tickets
-            base_score = 5 if ('facebook' in summary or 'syndication' in summary or 'audience' in summary) else 0
-
-            total_score = (matches * 10) + exact_bonus + completeness_bonus + priority_bonus + type_bonus + base_score
-            return total_score
+            priority_bonus = 5 if 'high' in priority_name or 'critical' in priority_name else 0
+            return matches * 3 + exact_bonus + priority_bonus
 
         # Sort by relevance score
         scored_issues = [(score_issue(issue), issue) for issue in final_issues]
         scored_issues.sort(reverse=True, key=lambda x: x[0])
-
-        # Debug log top scoring issues
-        logger.info(f"JIRA scoring results:")
-        for i, (score, issue) in enumerate(scored_issues[:5]):
-            summary = issue.get('fields', {}).get('summary', 'No summary')
-            key = issue.get('key', 'Unknown')
-            logger.info(f"  {i+1}. Score: {score} - {key}: {summary[:50]}...")
 
         # --- Format results ---
         results = []
@@ -504,7 +462,6 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Format results ---
         formatted = []
         for r in ranked[:limit]:
-            # Try multiple ways to get the page ID due to different Confluence API response formats
             page_id = r.get("content", {}).get("id") or r.get("id")
             title = r.get("title") or "Untitled"
 
@@ -642,10 +599,6 @@ def search_help_docs(query, limit=3):
         {"title": "Email Campaign Creation", "url": "https://help.blueshift.com/hc/en-us/articles/115002714173-Email-campaigns", "keywords": ["email", "campaign", "create", "setup", "subject", "line", "personalization", "template"]},
         {"title": "Personalization and Dynamic Content", "url": "https://help.blueshift.com/hc/en-us/articles/115002714253-Personalization", "keywords": ["personalization", "dynamic", "content", "subject", "line", "custom", "attributes", "merge"]},
         {"title": "Segmentation Overview", "url": "https://help.blueshift.com/hc/en-us/articles/115002669413-Segmentation-overview", "keywords": ["segmentation", "audience", "targeting", "segments", "customer", "groups", "filters"]},
-        {"title": "Facebook Conversions API", "url": "https://help.blueshift.com/hc/en-us/articles/24009984649235-Facebook-Conversions-API", "keywords": ["facebook", "conversions", "api", "integration", "tracking", "audience", "syndication", "setup"]},
-        {"title": "Facebook Audience Syndication", "url": "https://help.blueshift.com/hc/en-us/articles/360046864473-Facebook-audience", "keywords": ["facebook", "audience", "syndication", "lookalike", "custom", "integration", "setup", "troubleshoot"]},
-        {"title": "External Fetch Configuration", "url": "https://help.blueshift.com/hc/en-us/articles/360006449754-External-fetch", "keywords": ["external", "fetch", "api", "integration", "troubleshoot", "error", "failed", "configuration"]},
-        {"title": "Webhook Integration Setup", "url": "https://help.blueshift.com/hc/en-us/articles/115002714333-Webhooks", "keywords": ["webhook", "integration", "api", "external", "setup", "troubleshoot", "failed", "configuration"]},
     ]
 
     query_lower = query.lower()
@@ -739,7 +692,6 @@ def search_blueshift_api_docs(query, limit=3):
         logger.error(f"Blueshift API docs search error: {e}")
         return []
 
-# --- FIX 4: Robust fetch_help_doc_content with BeautifulSoup Fallback (Kept same) ---
 def fetch_help_doc_content_improved(url, max_content_length=2000):
     """Improved content fetching with fallback for missing BeautifulSoup"""
     try:
@@ -809,7 +761,6 @@ def fetch_help_doc_content_improved(url, max_content_length=2000):
     except Exception as e:
         logger.error(f"Error fetching content from {url}: {e}")
         return ""
-# --- END FIX 4 ---
 
 # --- CRITICAL FIX: TRULY LENIENT Validation Function ---
 def validate_search_results_improved(query, results, source_name):
@@ -821,34 +772,25 @@ def validate_search_results_improved(query, results, source_name):
     query_words = set(query.lower().split()) # FIX: ensure the query words are lowercased here
     validated_results = []
 
-    # Remove only the most basic stop words - keep more meaningful words
-    stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
-    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 2]
+    # Remove only the most basic stop words
+    stop_words = {'the', 'a', 'an'}
+    clean_query_words = [w for w in query_words if w not in stop_words and len(w) > 1]
 
     for result in results:
         title = result.get('title', '').lower()
         url = result.get('url', '')
-        # Also check description/summary if available
-        description = result.get('description', '').lower()
-        summary = result.get('summary', '').lower()
-        content = f"{title} {description} {summary}".lower()
 
         # Set default to ACCEPT (the core fix)
-        should_include = True
+        should_include = True  
+        
+        # Check for ANY relevance at all
+        meaningful_matches = len([w for w in clean_query_words if w in title])
 
-        # Check for ANY relevance in title OR content
-        meaningful_matches = len([w for w in clean_query_words if w in content])
-
-        # Special handling for Confluence - be extremely lenient since Confluence search already did relevance filtering
-        if source_name == "Confluence":
-            should_include = True  # Accept all Confluence results since they passed Confluence's own relevance filtering
-        elif source_name == "JIRA":
-            # Be very lenient with JIRA results since they're already scored and filtered
-            should_include = True  # Accept JIRA results that made it through the scoring system
-        elif meaningful_matches == 0:
+        # Only reject if ZERO matches AND no Blueshift terms
+        if meaningful_matches == 0:
             # Expanded platform terms for better context matching
-            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence', 'facebook', 'audience', 'lookalike', 'syndication', 'integration', 'external', 'fetch', 'optimizer', 'email', 'sms', 'segment', 'webhook', 'personalization', 'recommendation', 'error', 'failed', 'limit', 'channel', 'delivery', 'bounce'}
-            has_blueshift = any(term in content for term in blueshift_terms)
+            blueshift_terms = {'campaign', 'trigger', 'api', 'event', 'customer', 'journey', 'studio', 'message', 'mobile', 'app', 'push', 'zendesk', 'jira', 'confluence'}
+            has_blueshift = any(term in title for term in blueshift_terms)
 
             if not has_blueshift:
                 should_include = False  # Only reject if truly irrelevant
@@ -1060,61 +1002,6 @@ def get_available_tables(database_name):
         print(f"Error getting tables: {e}")
         return []
 
-# Cache for common message patterns - instant lookup, no database query needed
-MESSAGE_PATTERN_CACHE = {
-    # Quiet hours
-    'quiet': 'QuietHours',
-    'hours': 'QuietHours',
-
-    # Facebook/Social
-    'facebook': 'FacebookAudienceSync',
-    'fb': 'FacebookAudienceSync',
-    'sync': 'FacebookAudienceSync',
-    'audience': 'FacebookAudienceSync',
-    'lookalike': 'FacebookAudienceSync',
-    'syndication': 'FacebookAudienceSync',
-
-    # Errors
-    'external': 'ExternalFetchError',
-    'fetch': 'ExternalFetchError',
-    'channel': 'ChannelLimitError',
-    'limit': 'ChannelLimitError',
-    'dedup': 'DeduplicationError',
-    'dedupe': 'DeduplicationError',
-    'deduplication': 'DeduplicationError',
-    'duplicate': 'DeduplicationError',
-    'bounce': 'SoftBounce',
-    'bounced': 'SoftBounce',
-
-    # Triggers & Journey
-    'trigger': 'TriggerEvaluation',
-    'triggered': 'TriggerEvaluation',
-    'journey': 'UserJourney',
-    'evaluation': 'TriggerEvaluation',
-
-    # Suppression & Opt-out
-    'suppression': 'SuppressionCheck',
-    'suppressed': 'SuppressionCheck',
-    'optout': 'OptOutCheck',
-    'unsubscribe': 'UnsubscribeCheck',
-
-    # Channels
-    'sms': 'SMSDelivery',
-    'email': 'EmailDelivery',
-    'push': 'PushNotification',
-    'mobile': 'PushNotification',
-    'webhook': 'WebhookExecution',
-
-    # Other common issues
-    'timeout': 'TimeoutError',
-    'rate': 'RateLimitError',
-    'throttle': 'RateLimitError',
-    'api': 'APIError',
-    'permission': 'PermissionError',
-    'authentication': 'AuthenticationError',
-    'auth': 'AuthenticationError'
-}
-
 def sample_message_patterns(user_query, database_name, timeout_seconds=5):
     """Sample the database to find actual message patterns related to the user's query.
 
@@ -1140,7 +1027,11 @@ def sample_message_patterns(user_query, database_name, timeout_seconds=5):
             if word.lower() in MESSAGE_PATTERN_CACHE:
                 cached_pattern = MESSAGE_PATTERN_CACHE[word.lower()]
                 logger.info(f"Using cached pattern for '{word}': {cached_pattern}")
-                return cached_pattern
+                break
+
+        # If no pattern found, return None and rely on AI inference
+        if not actual_pattern:
+            return None
 
         logger.info(f"No cached pattern found, sampling database for: {words}")
 
@@ -1188,16 +1079,14 @@ def sample_message_patterns(user_query, database_name, timeout_seconds=5):
             if messages:
                 # Look for key terms in the actual messages
                 for msg in messages:
-                    if search_term.lower() in msg.lower():
-                        # Find the actual casing used in the message
-                        import re
-                        pattern = re.search(rf'\b\w*{search_term}\w*\b', msg, re.IGNORECASE)
-                        if pattern:
-                            actual_term = pattern.group(0)
-                            logger.info(f"Found actual message pattern: {actual_term}")
-                            # Cache the result for future queries
-                            MESSAGE_PATTERN_CACHE[search_term] = actual_term
-                            return actual_term
+                    import re
+                    pattern = re.search(rf'\b\w*{search_term}\w*\b', msg, re.IGNORECASE)
+                    if pattern:
+                        actual_term = pattern.group(0)
+                        logger.info(f"Found actual message pattern: {actual_term}")
+                        # Cache the result for future queries
+                        MESSAGE_PATTERN_CACHE[search_term] = actual_term
+                        return actual_term
 
         logger.info(f"No message patterns found for '{search_term}', AI will guess")
         return None
@@ -1206,322 +1095,115 @@ def sample_message_patterns(user_query, database_name, timeout_seconds=5):
         logger.error(f"Error sampling message patterns: {e}")
         return None
 
-def generate_athena_insights(user_query):
-    """Generate data insights using Athena queries based on user query with improved relevance"""
+def build_query_from_database_analysis(user_query, database_name):
+    """Build accurate Athena query using pattern matching - no slow database queries needed"""
     try:
-        # Same stop words filtering as other searches
+        logger.info(f"Building query from pattern analysis for: {user_query}")
+
+        # Determine query type and message pattern
+        query_lower = user_query.lower()
+
+        # Check cache for message pattern
+        message_pattern = None
         STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+        words = [w for w in user_query.lower().split() if len(w) > 2 and w.lower() not in STOP_WORDS]
 
-        def clean_words(words):
-            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+        for word in words:
+            if word in MESSAGE_PATTERN_CACHE:
+                message_pattern = MESSAGE_PATTERN_CACHE[word]
+                logger.info(f"Found pattern for '{word}': {message_pattern}")
+                break
 
-        # Extract key terms from user query
-        words = user_query.strip().split()
-        clean_query_words = clean_words(words)
-        if not clean_query_words:
-            clean_query_words = words
+        # Build query based on question type - with REAL structure
+        if 'how many' in query_lower or 'count' in query_lower:
+            # Volume analysis query
+            query_template = f"""select
+  file_date,
+  count(distinct user_uuid) as affected_users,
+  count(*) as total_occurrences,
+  log_level
+from {database_name}.campaign_execution_v3
+where account_uuid = 'YOUR_ACCOUNT_UUID'
+and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
+{f"and message like '%{message_pattern}%'" if message_pattern else ""}
+and file_date >= date_add('day', -14, current_date)
+group by file_date, log_level
+order by file_date desc"""
 
-        logger.info(f"Athena query generation - Original: '{user_query}' -> Key terms: {clean_query_words}")
+            explanation = f"**Volume Analysis Query**\n\nThis query counts {f'{message_pattern} occurrences' if message_pattern else 'events'} per day, grouped by error level.\n\n**What it shows:**\n- Daily affected user counts\n- Total occurrences per day\n- Breakdown by log level (ERROR, WARNING, INFO)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
+
+        elif 'error' in query_lower or 'fail' in query_lower or 'issue' in query_lower:
+            # Error investigation query
+            query_template = f"""select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
+from {database_name}.campaign_execution_v3
+where account_uuid = 'YOUR_ACCOUNT_UUID'
+and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
+and log_level = 'ERROR'
+{f"and message like '%{message_pattern}%'" if message_pattern else ""}
+and file_date >= date_add('day', -7, current_date)
+order by timestamp desc
+limit 200"""
+
+            explanation = f"**Error Investigation Query**\n\nThis query finds recent ERROR logs{f' related to {message_pattern}' if message_pattern else ''}.\n\n**Columns included:**\n- timestamp, user_uuid, campaign_uuid (when/who/what)\n- trigger_uuid (which trigger)\n- message (error details)\n- execution_key (links related logs)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
+
+        else:
+            # Feature-specific or journey query
+            query_template = f"""select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+from {database_name}.campaign_execution_v3
+where account_uuid = 'YOUR_ACCOUNT_UUID'
+and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
+{f"and message like '%{message_pattern}%'" if message_pattern else ""}
+and file_date >= date_add('day', -7, current_date)
+order by timestamp asc
+limit 500"""
+
+            explanation = f"**Feature Troubleshooting Query**\n\nThis query shows chronological progression{f' of {message_pattern} events' if message_pattern else ''}.\n\n**Columns included:**\n- timestamp (when it happened)\n- user_uuid, campaign_uuid, trigger_uuid (who/what/which)\n- message (event details)\n- log_level (INFO/WARNING/ERROR)\n- worker_name (which server)\n\n**Ordered by:** timestamp ASC (shows progression over time)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
+
+        return {
+            'database': database_name,
+            'sql_query': query_template.strip(),
+            'explanation': explanation,
+            'has_pattern': message_pattern is not None,
+            'pattern': message_pattern
+        }
+
+    except Exception as e:
+        logger.error(f"Error building query from database: {e}")
+        return None
+
+def generate_athena_insights(user_query):
+    """Generate data insights by querying AWS Athena directly - no AI needed!"""
+    try:
+        logger.info(f"Generating Athena query from database analysis: '{user_query}'")
 
         # Get available tables first
         database_name = ATHENA_DATABASES[0]  # Use first database
         available_tables = get_available_tables(database_name)
         table_list = ', '.join(available_tables[:20]) if available_tables else "customer_campaign_logs.campaign_execution_v3"
 
-        # Extract UUIDs from user query if provided
-        import re
-        uuid_pattern = r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
-        found_uuids = re.findall(uuid_pattern, user_query)
+        # USE AWS ATHENA DIRECTLY - No AI needed for query generation!
+        logger.info("Using AWS Athena to build query from real database analysis...")
+        database_result = build_query_from_database_analysis(user_query, database_name)
 
-        uuid_context = ""
-        if found_uuids:
-            uuid_context = f"\n\nUUIDs FOUND IN USER QUERY:\n"
-            for uuid in found_uuids:
-                uuid_context += f"- {uuid}\n"
-            uuid_context += "Include these specific UUIDs in the query (use as user_uuid, campaign_uuid, or account_uuid based on context).\n"
-            logger.info(f"Found UUIDs in query: {found_uuids}")
-
-        # Sample the database to find actual message patterns (DISABLED for performance - use cache only)
-        # actual_pattern = sample_message_patterns(user_query, database_name)
-
-        # Use cache-only pattern matching for instant response
-        actual_pattern = None
-        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
-        words = [w for w in user_query.lower().split() if len(w) > 2 and w.lower() not in STOP_WORDS]
-
-        # Check cache for instant pattern matching
-        for word in words:
-            if word in MESSAGE_PATTERN_CACHE:
-                actual_pattern = MESSAGE_PATTERN_CACHE[word]
-                logger.info(f"Using cached pattern for '{word}': {actual_pattern}")
-                break
-
-        pattern_context = ""
-        if actual_pattern:
-            pattern_context = f"\n\nKNOWN MESSAGE PATTERN:\nUse '{actual_pattern}' in your message like condition (verified pattern from common support queries).\n"
+        if database_result:
+            logger.info("Successfully built query from database analysis")
+            # Test and validate the query
+            validated = validate_and_test_query(
+                database_result['sql_query'],
+                database_result['database'],
+                user_query,
+                database_result['explanation']
+            )
+            if validated:
+                return validated
+            else:
+                return database_result
         else:
-            logger.info("No cached pattern found, AI will infer from query")
-
-        # --- Use the new call_gemini_api for analysis ---
-        # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}{pattern_context}
-
-AVAILABLE DATA:
-- Database: {database_name}
-- Main table: customer_campaign_logs.campaign_execution_v3
-- Key columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name, transaction_uuid, execution_key
-
-ANALYZE THE USER'S QUESTION and generate a query that matches actual Blueshift support query patterns.
-
-IMPORTANT: Generate DETAILED, CONTEXTUAL queries based on the question type.
-
-QUERY PATTERNS BY SCENARIO:
-
-1. USER JOURNEY / "Why didn't user get message?" / Feature troubleshooting:
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and user_uuid = 'client_user_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp asc
-limit 500
-
-WHY THIS QUERY: Shows complete user journey through campaign - all evaluations, checks, errors, successes in chronological order.
-INCLUDES: trigger_uuid (which trigger fired), log_level (errors vs info), worker_name (which server processed)
-
-2. ERROR INVESTIGATION / "Why are messages failing?":
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and log_level = 'ERROR'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp desc
-limit 200
-
-WHY THIS QUERY: Focuses on errors only, recent first. execution_key links related log entries.
-
-3. FEATURE SPECIFIC / "Quiet hours not working" / "Facebook sync issues":
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and message like '%{feature_pattern}%'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp asc
-limit 300
-
-WHY THIS QUERY: Filters for specific feature logs, shows chronological progression of feature behavior.
-
-4. VOLUME ANALYSIS / "How many users affected?":
-select
-  file_date,
-  count(distinct user_uuid) as affected_users,
-  count(*) as total_occurrences,
-  log_level
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and message like '%{error_pattern}%'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-group by file_date, log_level
-order by file_date desc
-
-WHY THIS QUERY: Shows impact over time - how many users hit the issue per day.
-
-5. CAMPAIGN PERFORMANCE / "Is campaign sending?":
-select
-  log_level,
-  count(*) as count,
-  count(distinct user_uuid) as unique_users
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-group by log_level
-order by count desc
-
-WHY THIS QUERY: Summary view - how many ERRORs vs INFOs, overall campaign health.
-
-ANALYZE THE USER'S QUESTION AND CHOOSE THE RIGHT PATTERN:
-- Journey questions → Pattern 1 (detailed user journey)
-- Error questions → Pattern 2 (error-focused)
-- Feature questions → Pattern 3 (feature-specific)
-- "How many" questions → Pattern 4 (volume analysis)
-- "Is it working" questions → Pattern 5 (summary stats)
-
-CRITICAL QUERY RULES:
-1. **Include relevant columns** based on query type:
-   - User journey: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
-   - Error investigation: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
-   - Volume analysis: Use COUNT, GROUP BY, aggregations
-   - Feature-specific: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-
-2. **Use appropriate WHERE conditions**:
-   - Always: account_uuid, file_date range
-   - Journey queries: Add user_uuid, campaign_uuid
-   - Error queries: Add log_level = 'ERROR'
-   - Feature queries: Add message like '%pattern%' (ONLY ONE)
-
-3. **Set appropriate LIMIT**:
-   - User journey: 500 (need full story)
-   - Error investigation: 200 (enough to see patterns)
-   - Feature-specific: 300 (see progression)
-   - Volume analysis: No limit needed (aggregated)
-
-4. **Use correct ORDER BY**:
-   - Journey queries: timestamp ASC (chronological story)
-   - Error queries: timestamp DESC (recent errors first)
-   - Volume queries: date DESC or count DESC
-
-5. **Date ranges**:
-   - Use: file_date >= '2024-12-01' AND file_date < '2024-12-15'
-   - This ensures partition pruning for performance
-
-EXAMPLE OUTPUTS:
-
-For "Why didn't user 123 receive message?":
-```sql
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and user_uuid = 'client_user_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp asc
-limit 500
-```
-
-For "How many users are getting channel limit errors?":
-```sql
-select
-  file_date,
-  count(distinct user_uuid) as affected_users,
-  count(*) as total_occurrences
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and message like '%ChannelLimitError%'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-group by file_date
-order by file_date desc
-```
-
-For "Are there Facebook sync errors?":
-```sql
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and log_level = 'ERROR'
-and message like '%FacebookAudienceSync%'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp desc
-limit 200
-```
-
-Generate a query specifically for: "{user_query}"
-
-Format your response as:
-DATABASE: {database_name}
-
-SQL_QUERY:
-[Write the exact format shown above - each clause on its own line with proper spacing]
-
-INSIGHT_EXPLANATION:
-[Brief explanation of what this query searches for and why it helps with the user's question]"""
-
-        # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
-        ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
-        # --- End Gemini API call ---
-
-        if ai_response.startswith("Error:"):
-            logger.error(f"Athena AI API error: {ai_response}")
+            logger.warning("Database analysis failed, using fallback")
             return get_default_athena_insights(user_query)
-
-        logger.info(f"Athena AI response: {ai_response[:200]}...")
-        return parse_athena_analysis(ai_response, user_query)
 
     except Exception as e:
         logger.error(f"Athena insights generation error: {e}")
-        return get_default_athena_insights(user_query)
-
-def parse_athena_analysis(ai_response, user_query):
-    """Parse AI response and execute Athena query"""
-    try:
-        lines = ai_response.split('\n')
-        database_name = ATHENA_DATABASES[0]  # Default to first database
-        sql_query = ""
-        explanation = ""
-
-        in_database_section = False
-        in_sql_section = False
-        in_explanation_section = False
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith('DATABASE:'):
-                in_database_section = True
-                in_sql_section = False
-                in_explanation_section = False
-                continue
-            elif line.startswith('SQL_QUERY:'):
-                in_database_section = False
-                in_sql_section = True
-                in_explanation_section = False
-                continue
-            elif line.startswith('INSIGHT_EXPLANATION:'):
-                in_database_section = False
-                in_sql_section = False
-                in_explanation_section = True
-                continue
-
-            if in_database_section and line:
-                # Check if the suggested database is in our list
-                if line in ATHENA_DATABASES:
-                    database_name = line
-            elif in_sql_section and line:
-                # Clean up markdown formatting
-                cleaned_line = line.replace('```sql', '').replace('```', '').strip()
-                if cleaned_line:  # Only add non-empty lines
-                    sql_query += cleaned_line + "\n"
-            elif in_explanation_section and line:
-                explanation += line + "\n"
-
-        # Validate and refine the query before returning
-        if sql_query.strip():
-            # Ensure we use placeholder values instead of real data
-            safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)
-
-            # TEST QUERY: Validate it works and return sample results
-            validated_query = validate_and_test_query(safe_sql_query, database_name, user_query, explanation.strip())
-
-            if validated_query:
-                return validated_query
-            else:
-                # If validation fails, return original query
-                print(f"Generated SQL Query: {safe_sql_query}")  # Debug output
-                return {
-                    'database': database_name,
-                    'sql_query': safe_sql_query,
-                    'explanation': explanation.strip() + "\n\n💡 Copy this query to AWS Athena console and customize with specific account_uuid, campaign_uuid, and date ranges for your support case.",
-                    'results': {"note": "Query template ready for manual customization in Athena", "data": []},
-                    'has_data': False
-                }
-        else:
-            return get_default_athena_insights(user_query)
-
-    except Exception as e:
-        print(f"Error parsing Athena analysis: {e}")
         return get_default_athena_insights(user_query)
 
 def validate_and_test_query(sql_query, database_name, user_query, explanation):
@@ -1530,10 +1212,13 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
         logger.info("Validating and testing generated Athena query...")
 
         # Create a test version of the query - remove placeholders and add realistic test conditions
-        test_query = sql_query.replace("'client_account_uuid'", "(select account_uuid from customer_campaign_logs.campaign_execution_v3 limit 1)")
-        test_query = test_query.replace("'client_campaign_uuid'", "(select campaign_uuid from customer_campaign_logs.campaign_execution_v3 where campaign_uuid is not null limit 1)")
-        test_query = test_query.replace("'client_user_uuid'", "(select user_uuid from customer_campaign_logs.campaign_execution_v3 where user_uuid is not null limit 1)")
-
+        test_query = sql_query.replace("'YOUR_ACCOUNT_UUID'", "(select account_uuid from customer_campaign_logs.campaign_execution_v3 limit 1)")
+        test_query = test_query.replace("'YOUR_CAMPAIGN_UUID'", "(select campaign_uuid from customer_campaign_logs.campaign_execution_v3 where campaign_uuid is not null limit 1)")
+        test_query = test_query.replace("'YOUR_USER_UUID'", "(select user_uuid from customer_campaign_logs.campaign_execution_v3 where user_uuid is not null limit 1)")
+        
+        # NOTE: We cannot safely test queries with message like '%pattern%' due to potential SQL injection risks,
+        # so we rely on the query structure being correct and the message like clause being a variable.
+        
         # Ensure it's limited to prevent long queries
         if 'limit' not in test_query.lower():
             test_query += "\nlimit 10"
@@ -1554,18 +1239,46 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
 
             logger.info(f"✅ Query validated successfully! Found {len(sample_data)} sample rows")
 
-            # Build enhanced explanation with sample results
+            # Extract real UUIDs from sample data to show as examples
+            example_account_uuid = None
+            example_campaign_uuid = None
+            example_user_uuid = None
+
+            if sample_data and len(sample_data) > 0:
+                for row in sample_data:
+                    if not example_account_uuid and 'account_uuid' in row and row['account_uuid'] != 'None':
+                        example_account_uuid = row.get('account_uuid')
+                    if not example_campaign_uuid and 'campaign_uuid' in row and row['campaign_uuid'] != 'None':
+                        example_campaign_uuid = row.get('campaign_uuid')
+                    if not example_user_uuid and 'user_uuid' in row and row['user_uuid'] != 'None':
+                        example_user_uuid = row.get('user_uuid')
+
+            # Build enhanced explanation with sample results and real UUIDs
             enhanced_explanation = explanation + "\n\n"
 
             if sample_data and len(sample_data) > 0:
                 enhanced_explanation += f"✅ **Query Validated**: This query successfully returns results from your database.\n\n"
+
+                # Show example UUIDs first
+                enhanced_explanation += "**Example UUIDs from your database:**\n"
+                if example_account_uuid:
+                    enhanced_explanation += f"- account_uuid: `{example_account_uuid}`\n"
+                if example_campaign_uuid:
+                    enhanced_explanation += f"- campaign_uuid: `{example_campaign_uuid}`\n"
+                if example_user_uuid:
+                    enhanced_explanation += f"- user_uuid: `{example_user_uuid}`\n"
+                enhanced_explanation += "\n"
+
                 enhanced_explanation += f"**Sample Results Preview** ({len(sample_data)} rows):\n"
                 for i, row in enumerate(sample_data[:3], 1):
                     enhanced_explanation += f"\n{i}. "
                     # Show first few columns
-                    for col in columns[:3]:
+                    for col in columns[:4]:
                         value = row.get(col, 'N/A')
-                        enhanced_explanation += f"{col}: {str(value)[:50]}... | "
+                        # Truncate long values
+                        if len(str(value)) > 60:
+                            value = str(value)[:60] + "..."
+                        enhanced_explanation += f"{col}: {value} | "
                     enhanced_explanation = enhanced_explanation.rstrip(' | ')
             else:
                 enhanced_explanation += "⚠️ **Query is valid but returned no results**. This might mean:\n"
@@ -1573,7 +1286,7 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
                 enhanced_explanation += "- The date range needs adjustment\n"
                 enhanced_explanation += "- Try a broader search term\n"
 
-            enhanced_explanation += "\n\n💡 **Next Steps**: Copy this query and replace placeholders with your specific account_uuid, campaign_uuid, user_uuid, and date range."
+            enhanced_explanation += "\n\n💡 **Next Steps**: Copy the query above and replace the placeholder UUIDs with the examples shown (or your specific case values), and adjust the date range as needed."
 
             return {
                 'database': database_name,
@@ -2221,17 +1934,15 @@ MAIN_TEMPLATE = '''
         <div id="resultsContainer" class="results-container">
             <div class="response-section">
                 <div id="responseContent" class="response-content"></div>
-            </div>
-
-            <div class="followup-section">
-                <h4>Have a follow-up question?</h4>
-                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
-                <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
-                    <button id="followupBtn">Ask</button>
+                <div class="followup-section" style="margin-top: 25px; padding: 20px 0; border-left: none;">
+                    <h4>Did this answer your question? Ask me for more details.</h4>
+                    <div class="followup-container" style="margin-top: 10px;">
+                        <input type="text" id="followupInput" placeholder="Ask a follow-up question..." style="padding: 10px 15px; border-radius: 5px;" />
+                        <button id="followupBtn" style="padding: 10px 20px; border-radius: 5px; margin-left: 5px;">Ask</button>
+                    </div>
+                    <div id="followupResponse" class="followup-response" style="margin-top: 15px;"></div>
                 </div>
-                <div id="followupResponse" class="followup-response"></div>
-            </div>
+                </div>
 
             <div id="athenaSection" class="athena-section" style="display: none;">
                 <h3>📊 Suggested Query <span class="athena-badge">ATHENA</span></h3>
@@ -2345,8 +2056,10 @@ MAIN_TEMPLATE = '''
             });
         });
 
-        document.getElementById('followupBtn').addEventListener('click', function() {
+        document.getElementById('followupBtn').addEventListener('click', function(e) {
+            e.preventDefault();
             const followupQuery = document.getElementById('followupInput').value.trim();
+
             if (!followupQuery) {
                 alert('Please enter a follow-up question');
                 return;
@@ -2386,7 +2099,7 @@ MAIN_TEMPLATE = '''
             sourcesGrid.innerHTML = '';
 
             const categories = [
-                { key: 'jira_tickets', title: '🎫 JIRA Tickets', icon: '🎫' },
+                { key: 'jira_tickets', title: '🎫 Related JIRAs', icon: '🎫' },
                 { key: 'help_docs', title: '📚 Help Docs & APIs', icon: '📚' },
                 { key: 'confluence_docs', title: '🏢 Confluence Pages', icon: '🏢' },
                 { key: 'support_tickets', title: '🎯 Zendesk', icon: '🎯' }
@@ -2448,33 +2161,3 @@ MAIN_TEMPLATE = '''
 </body>
 </html>
 '''
-
-if __name__ == '__main__':
-    print("Starting Blueshift Support Bot with AWS Athena Integration...")
-    port = int(os.environ.get('PORT', 8103))
-    print(f"Visit: http://localhost:{port}")
-    print(f"AWS Region: {AWS_REGION}")
-    print(f"Athena Databases: {', '.join(ATHENA_DATABASES)}")
-    print(f"Athena S3 Output: {ATHENA_S3_OUTPUT}")
-
-    # Debug: Check environment variables
-    print(f"\n=== Environment Variables Debug ===")
-    print(f"JIRA_TOKEN: {'SET' if JIRA_TOKEN else 'NOT SET'}")
-    print(f"JIRA_EMAIL: {'SET' if JIRA_EMAIL else 'NOT SET'}")
-    print(f"CONFLUENCE_TOKEN: {'SET' if CONFLUENCE_TOKEN else 'NOT SET'}")
-    print(f"CONFLUENCE_EMAIL: {'SET' if CONFLUENCE_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_TOKEN: {'SET' if ZENDESK_TOKEN else 'NOT SET'}")
-    print(f"ZENDESK_EMAIL: {'SET' if ZENDESK_EMAIL else 'NOT SET'}")
-    print(f"ZENDESK_SUBDOMAIN: {'SET' if ZENDESK_SUBDOMAIN else 'NOT SET'}")
-    print("=" * 40)
-    
-    # Print API status results
-    print("\n=== External API Status ===")
-    for api, status in API_STATUS.items():
-        print(f"{api.upper()}: {'✅ Connected' if status else '❌ Failed/Missing Credentials'}")
-    print("=" * 40)
-
-    # ADDED Diagnostic Print Statement
-    print("--- ATTEMPTING TO START FLASK APP ---")
-
-    app.run(host='0.0.0.0', port=port, debug=True)

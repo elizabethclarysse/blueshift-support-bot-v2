@@ -202,11 +202,8 @@ When this feature isn't working as expected:
    - **Database queries:** customer_campaign_logs.campaign_execution_v3
    - **Error patterns:** ExternalFetchError, ChannelLimitError, DeduplicationError
    - **API endpoints** to test
-
-## **Internal Notes**
-- **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
-- **API Base:** https://api.getblueshift.com
-- This is internal support guidance - provide actionable troubleshooting steps
+   - **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
+   - **API Base:** https://api.getblueshift.com
 
 FORMATTING RULES:
 - Use **bold** for ALL section headers (even though they're already ## markdown headers)
@@ -2044,12 +2041,47 @@ def handle_followup():
         if not followup_query:
             return jsonify({"error": "Please provide a follow-up question"})
 
-        # Call Gemini API
-        ai_response = call_gemini_api(followup_query)
+        # Call Claude API with simpler prompt for follow-up questions
+        if not ANTHROPIC_API_KEY:
+            return jsonify({"error": "API key not configured"})
 
-        return jsonify({
-            "response": ai_response
-        })
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+        }
+
+        # Simpler system prompt for follow-up - direct answers, not step-by-step
+        system_prompt = """You are Blueshift support. Answer follow-up questions directly and concisely.
+
+RULES:
+- Provide direct answers, not step-by-step guides
+- Use **bold** for key terms, error names, feature names, UI elements
+- Keep responses focused and to-the-point
+- Include technical details, error patterns, and specific examples
+- This is an internal support tool - share all relevant information including database queries, API endpoints, and troubleshooting tips"""
+
+        data_payload = {
+            'model': 'claude-3-5-sonnet-20241022',
+            'max_tokens': 2000,
+            'temperature': 0.3,
+            'system': system_prompt,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': followup_query
+                }
+            ]
+        }
+
+        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data_payload, timeout=30)
+
+        if response.status_code == 200:
+            response_json = response.json()
+            ai_response = response_json.get('content', [{}])[0].get('text', '').strip()
+            return jsonify({"response": ai_response})
+        else:
+            return jsonify({"error": f"API Error: {response.status_code}"})
 
     except Exception as e:
         print(f"Error in handle_followup: {e}")
@@ -2205,7 +2237,7 @@ MAIN_TEMPLATE = '''
     <style>
         body {
             font-family: 'Calibri', sans-serif;
-            font-size: 10pt;
+            font-size: 9pt;
             margin: 0;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;

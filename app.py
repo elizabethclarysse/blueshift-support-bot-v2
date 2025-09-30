@@ -2408,46 +2408,6 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
-        function formatResponse(text) {
-            if (!text) return '';
-            var div = document.createElement('div');
-            var lines = text.split('\n');
-
-            lines.forEach(function(line) {
-                if (line.startsWith('## ')) {
-                    var h3 = document.createElement('h3');
-                    h3.style.color = '#2790FF';
-                    h3.style.marginTop = '20px';
-                    h3.style.marginBottom = '10px';
-                    h3.textContent = line.substring(3);
-                    div.appendChild(h3);
-                } else if (line.startsWith('### ')) {
-                    var h4 = document.createElement('h4');
-                    h4.style.color = '#2790FF';
-                    h4.style.marginTop = '15px';
-                    h4.style.marginBottom = '8px';
-                    h4.textContent = line.substring(4);
-                    div.appendChild(h4);
-                } else {
-                    var p = document.createElement('p');
-                    p.style.margin = '5px 0';
-                    var parts = line.split('**');
-                    parts.forEach(function(part, idx) {
-                        if (idx % 2 === 1) {
-                            var strong = document.createElement('strong');
-                            strong.textContent = part;
-                            p.appendChild(strong);
-                        } else {
-                            p.appendChild(document.createTextNode(part));
-                        }
-                    });
-                    div.appendChild(p);
-                }
-            });
-
-            return div.innerHTML;
-        }
-
         document.getElementById('searchBtn').addEventListener('click', function() {
             const query = document.getElementById('queryInput').value.trim();
             if (!query) {
@@ -2471,8 +2431,8 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response with formatting
-                document.getElementById('responseContent').innerHTML = formatResponse(data.response);
+                // Show response
+                document.getElementById('responseContent').textContent = data.response;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');

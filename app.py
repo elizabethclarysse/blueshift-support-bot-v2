@@ -1698,6 +1698,50 @@ INSIGHT_EXPLANATION:
         logger.error(f"Athena insights generation error: {e}")
         return get_default_athena_insights(user_query)
 
+def format_sql_query(sql_query):
+    """Format SQL query to put SELECT columns on a single line"""
+    lines = sql_query.split('\n')
+    formatted_lines = []
+    in_select = False
+    select_columns = []
+
+    for line in lines:
+        line_stripped = line.strip()
+        line_lower = line_stripped.lower()
+
+        # Check if we're starting a SELECT statement
+        if line_lower.startswith('select'):
+            in_select = True
+            # If SELECT has columns on same line, handle it
+            if len(line_stripped) > 6:  # "select" is 6 chars
+                rest = line_stripped[6:].strip()
+                if rest and not rest.lower().startswith('from'):
+                    select_columns.append(rest.rstrip(','))
+            continue
+
+        # Check if we've reached FROM (end of column list)
+        if in_select and line_lower.startswith('from'):
+            # Join all select columns on one line
+            if select_columns:
+                formatted_lines.append('select ' + ', '.join(select_columns))
+            else:
+                formatted_lines.append('select *')
+            formatted_lines.append(line_stripped)
+            in_select = False
+            select_columns = []
+            continue
+
+        # If we're in SELECT section, collect columns
+        if in_select:
+            col = line_stripped.rstrip(',')
+            if col:
+                select_columns.append(col)
+        else:
+            # Not in SELECT, just add the line
+            formatted_lines.append(line_stripped)
+
+    return '\n'.join(formatted_lines)
+
 def parse_athena_analysis(ai_response, user_query):
     """Parse AI response and execute Athena query"""
     try:
@@ -1763,6 +1807,9 @@ def parse_athena_analysis(ai_response, user_query):
                     cleaned_lines.append(line)
 
             sql_query = '\n'.join(cleaned_lines)
+
+            # Format SELECT columns on a single line
+            sql_query = format_sql_query(sql_query)
 
             # Ensure we use placeholder values instead of real data
             safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)

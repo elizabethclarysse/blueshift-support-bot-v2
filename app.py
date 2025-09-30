@@ -165,6 +165,8 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
 
         system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown with proper bold formatting for readability.
 
+IMPORTANT: This is an INTERNAL support tool used by Blueshift support team members. DO NOT include any "Support Contact" sections, "Contact support@blueshift.com" information, or instructions to reach out to Blueshift support. The users ARE the support team.
+
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
 2. If documentation content contains step-by-step instructions, use them precisely.

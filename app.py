@@ -1369,7 +1369,10 @@ def generate_athena_insights(user_query):
 
         pattern_context = ""
         if actual_pattern:
-            pattern_context = f"\n\nKNOWN MESSAGE PATTERN:\nUse '{actual_pattern}' in your message like condition (verified pattern from common support queries).\n"
+            pattern_context = f"\n\n🚨 MANDATORY MESSAGE PATTERN DETECTED 🚨\n"
+            pattern_context += f"YOU MUST INCLUDE: and message like '%{actual_pattern}%'\n"
+            pattern_context += f"This is a VERIFIED pattern from real support queries.\n"
+            pattern_context += f"FAILURE TO INCLUDE THIS PATTERN WILL RESULT IN AN INCORRECT QUERY.\n"
         else:
             logger.info("No cached pattern found, AI will infer from query")
 
@@ -1599,18 +1602,34 @@ order by timestamp asc
 
 Generate a query specifically for: "{user_query}"
 
-**CRITICAL INSTRUCTIONS:**
-1. **ALWAYS use KNOWN MESSAGE PATTERN if provided** - add: and message like '%PatternName%'
-2. **For error questions** - add: and log_level = 'ERROR'
-3. **For count questions** - use: select count(distinct user_uuid)
-4. **For specific columns** - only select what's needed (don't always use *)
-5. **For JSON extraction** - use: json_extract_scalar(message, '$.field_name') AS field_name
-6. **For excluding errors** - use: and message not like '%ErrorType%' (can have multiple)
-7. **Use appropriate columns based on query type:**
-   - User journey: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-   - Error investigation: timestamp, user_uuid, message, log_level, execution_key
-   - Volume analysis: count(distinct user_uuid), file_date, log_level
-   - JSON extraction: json_extract_scalar fields, timestamp
+**🚨 CRITICAL MANDATORY RULES - FAILURE TO FOLLOW = INCORRECT QUERY 🚨**
+
+1. **IF "MANDATORY MESSAGE PATTERN" WAS DETECTED ABOVE:**
+   - YOU **MUST** INCLUDE THE EXACT LINE: and message like '%PatternName%'
+   - DO NOT generate a query without this line
+   - This is NON-NEGOTIABLE
+
+2. **REQUIRED query elements:**
+   - ALWAYS include: account_uuid, campaign_uuid, file_date range
+   - For errors: MUST have log_level = 'ERROR'
+   - For counts: use count(distinct user_uuid) as affected_users
+   - For user journeys: MUST include user_uuid in WHERE clause
+
+3. **Column selection - DO NOT use SELECT * unless it's a user journey:**
+   - Error analysis: timestamp, user_uuid, message, log_level, execution_key
+   - Volume/count: count(distinct user_uuid), file_date, log_level
+   - JSON data: json_extract_scalar(message, '$.field') AS field, timestamp
+
+4. **NEVER generate a generic query like:**
+   - ❌ SELECT timestamp, message FROM ... WHERE log_level = 'ERROR' LIMIT 10
+   - ❌ Any query without message LIKE when a pattern was detected
+   - ❌ Any query without file_date range
+
+5. **GOOD query examples:**
+   - ✅ Includes specific message LIKE '%ErrorType%'
+   - ✅ Has proper file_date >= and file_date < range
+   - ✅ Selects appropriate columns for the question type
+   - ✅ Orders by timestamp (ASC for journey, DESC for errors)
 
 Format your response as:
 DATABASE: {database_name}

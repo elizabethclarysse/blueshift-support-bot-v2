@@ -25,6 +25,11 @@ AI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
 # ---------------------------------
 
+# --- ANTHROPIC API CONFIGURATION (for Athena SQL generation) ---
+ANTHROPIC_API_KEY = os.environ.get('CLAUDE_API_KEY')
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+# ---------------------------------
+
 # AWS Athena configuration - set these via environment variables
 ATHENA_DATABASES = os.environ.get('ATHENA_DATABASE', 'customer_campaign_logs').split(',')
 ATHENA_S3_OUTPUT = os.environ.get('ATHENA_S3_OUTPUT', 's3://bsft-customers/athena-results/')
@@ -124,20 +129,16 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-# --- REPLACEMENT FOR call_anthropic_api, WITH AI RESPONSE FIX ---
+# --- REPLACEMENT FOR call_anthropic_api, USING ANTHROPIC CLAUDE ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
-    """Call Google Gemini API with system context and configuration.
-    
-    FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
+    """Call Anthropic Claude API with system context and configuration.
+
+    Switched from Gemini to Claude to avoid rate limit issues.
     """
-    if not AI_API_KEY:
-        return "Error: GEMINI_API_KEY is not configured."
+    if not ANTHROPIC_API_KEY:
+        return "Error: CLAUDE_API_KEY is not configured."
 
     try:
-        headers = {
-            'Content-Type': 'application/json',
-        }
-        
         # Build context from actual retrieved content
         platform_context = ""
 
@@ -157,7 +158,6 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content
-        # FIX: Temperature set to 0.3 for the general query to reduce brittleness/conversational stops.
         if temperature > 0.0:
             temp = 0.3
         else:
@@ -217,36 +217,36 @@ FORMATTING RULES:
 - This makes the response much easier to scan and read
 """
 
-        # FIX: Ensure the prompt explicitly tells the model to start the structured response
+        # Ensure the prompt explicitly tells the model to start the structured response
         start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below. Do NOT use conversational filler like 'Of course, here is...'"
-        full_prompt = system_instruction_content + "\n\n" + start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
 
-        contents_array = [
-            {"role": "user", "parts": [{"text": full_prompt}]}
-        ]
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+        }
 
         data = {
-            "contents": contents_array,
-            "generationConfig": { 
-                "temperature": temp, 
-                "maxOutputTokens": 4000  # CRITICAL FIX: Increased capacity
-            }
+            'model': 'claude-3-5-sonnet-20241022',
+            'max_tokens': 4000,
+            'temperature': temp,
+            'system': system_instruction_content,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
+                }
+            ]
         }
-        
-        # Add API Key to the URL
-        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
 
-        # Timeout increased to 60 seconds 
-        response = requests.post(url_with_key, headers=headers, json=data, timeout=60) 
+        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data, timeout=60)
 
         if response.status_code == 200:
             response_json = response.json()
-            # Safely extract the text from the response structure
-            gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-            if not gemini_response:
-                # Check for prompt filtering or safety block issues
-                return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
-            return gemini_response
+            claude_response = response_json.get('content', [{}])[0].get('text', '').strip()
+            if not claude_response:
+                return f"API Error: Response blocked or empty."
+            return claude_response
         else:
             return f"API Error {response.status_code}: {response.text[:200]}"
 
@@ -257,7 +257,7 @@ FORMATTING RULES:
 
 def generate_followup_suggestions(original_query, ai_response):
     """Generate 3 relevant follow-up questions based on the query and response."""
-    if not AI_API_KEY:
+    if not ANTHROPIC_API_KEY:
         logger.warning("No AI API key - returning default follow-up suggestions")
         return get_default_followup_suggestions(original_query)
 
@@ -283,22 +283,29 @@ How do I configure this in the UI?
 What are common errors with this feature?
 Can you show me an example implementation?"""
 
-        headers = {'Content-Type': 'application/json'}
-        contents_array = [{"role": "user", "parts": [{"text": prompt}]}]
-        data = {
-            "contents": contents_array,
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 300
-            }
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
         }
 
-        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
-        response = requests.post(url_with_key, headers=headers, json=data, timeout=15)
+        data = {
+            'model': 'claude-3-5-sonnet-20241022',
+            'max_tokens': 300,
+            'temperature': 0.7,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': prompt
+                }
+            ]
+        }
+
+        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data, timeout=15)
 
         if response.status_code == 200:
             response_json = response.json()
-            text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+            text = response_json.get('content', [{}])[0].get('text', '').strip()
 
             logger.info(f"Follow-up API response: {text[:200]}")
 
@@ -1636,40 +1643,49 @@ SQL_QUERY:
 INSIGHT_EXPLANATION:
 [Brief explanation of what this query searches for and why it helps with the user's question]"""
 
-        # Call Gemini API directly for SQL generation (don't use call_gemini_api wrapper - it adds support bot context)
+        # Call Anthropic Claude API for SQL generation (more reliable than Gemini for structured output)
         try:
-            headers = {'Content-Type': 'application/json'}
-            contents_array = [{"role": "user", "parts": [{"text": analysis_prompt}]}]
+            if not ANTHROPIC_API_KEY:
+                logger.error("ANTHROPIC_API_KEY not set, falling back to default query")
+                return get_default_athena_insights(user_query)
+
+            headers = {
+                'Content-Type': 'application/json',
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01'
+            }
 
             data = {
-                'contents': contents_array,
-                'generationConfig': {
-                    'temperature': 0.0,  # Deterministic SQL generation
-                    'maxOutputTokens': 4000,
-                    'topP': 0.95,
-                    'topK': 40
-                }
+                'model': 'claude-3-5-sonnet-20241022',
+                'max_tokens': 4000,
+                'temperature': 0.0,  # Deterministic SQL generation
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': analysis_prompt
+                    }
+                ]
             }
 
             response = requests.post(
-                f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={AI_API_KEY}',
+                ANTHROPIC_API_URL,
                 headers=headers,
                 json=data,
                 timeout=30
             )
 
             if response.status_code != 200:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
                 return get_default_athena_insights(user_query)
 
             result = response.json()
-            ai_response = result['candidates'][0]['content']['parts'][0]['text']
-            logger.info(f"Athena SQL generated successfully: {ai_response[:200]}...")
+            ai_response = result['content'][0]['text']
+            logger.info(f"Athena SQL generated successfully with Claude: {ai_response[:200]}...")
 
         except Exception as e:
-            logger.error(f"Gemini API call failed: {e}")
+            logger.error(f"Anthropic API call failed: {e}")
             return get_default_athena_insights(user_query)
-        # --- End Gemini API call ---
+        # --- End Anthropic API call ---
 
         if ai_response.startswith("Error:"):
             logger.error(f"Athena AI API error: {ai_response}")

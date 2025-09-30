@@ -527,25 +527,26 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Build queries progressively ---
         cql_variants = []
 
-        # 1. Exact phrase (standard fields) - only pages
-        cql_variants.append(f'type = page AND (text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\"")')
+        # 1. Exact phrase - prioritize title matches
+        cql_variants.append(f'type = page AND title ~ "\\"{query}\\""')
 
-        # 2. Clean words AND (standard fields) - only pages
+        # 2. Exact phrase in text
+        cql_variants.append(f'type = page AND text ~ "\\"{query}\\""')
+
+        # 3. All clean words in title (highest relevance)
+        if len(clean_query_words) > 1:
+            title_and_parts = [f'title ~ "{w}"' for w in clean_query_words]
+            cql_variants.append(f'type = page AND ({" AND ".join(title_and_parts)})')
+
+        # 4. All clean words anywhere (title OR text)
         if len(clean_query_words) > 1:
             and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
             cql_variants.append(f'type = page AND ({" AND ".join(and_parts)})')
 
-        # 3. Clean words OR (standard fields) - only pages
-        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-        or_parts.append(f'content ~ "{query}"')
-        cql_variants.append(f'type = page AND ({" OR ".join(or_parts)})')
-
-
-        # 4. Single most important word (if we have multiple) - only pages
+        # 5. Main word in title (using longest word as most significant)
         if len(clean_query_words) > 1:
-            # Use longest word as most likely to be significant
             main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'type = page AND (title ~ "{main_word}" OR text ~ "{main_word}")')
+            cql_variants.append(f'type = page AND title ~ "{main_word}"')
 
         # Add space filter if provided
         if space_key:
@@ -576,16 +577,29 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
              logger.info("No Confluence results found with any query variant")
              return []
 
-        # --- Re-rank: trust API score, tiny title nudge ---
+        # --- Re-rank: prioritize title matches heavily ---
         def score_fn(r):
             api_score = r.get("score", 0) or 0
             title = (r.get("title") or "").lower()
+            query_lower = query.lower()
 
-            # Check if any clean words appear in title
+            score = api_score * 100
+
+            # Exact phrase in title = huge boost
+            if query_lower in title:
+                score += 1000
+
+            # Check if all clean words appear in title
             title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
-            boost = title_word_matches * 5  # Small boost per matching word
 
-            return api_score * 100 + boost
+            # All words in title = major boost
+            if title_word_matches == len(clean_query_words):
+                score += 500
+            else:
+                # Partial matches get smaller boost
+                score += title_word_matches * 50
+
+            return score
 
         ranked = sorted(final_results, key=score_fn, reverse=True)
 

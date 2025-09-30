@@ -1430,7 +1430,7 @@ select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
-and message like '%{feature_pattern}%'
+and message like '%QuietHours%'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 order by timestamp asc
@@ -1447,7 +1447,7 @@ select
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
-and message like '%{error_pattern}%'
+and message like '%ChannelLimitError%'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 group by file_date, log_level
@@ -1634,8 +1634,39 @@ SQL_QUERY:
 INSIGHT_EXPLANATION:
 [Brief explanation of what this query searches for and why it helps with the user's question]"""
 
-        # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
-        ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
+        # Call Gemini API directly for SQL generation (don't use call_gemini_api wrapper - it adds support bot context)
+        try:
+            headers = {'Content-Type': 'application/json'}
+            contents_array = [{"role": "user", "parts": [{"text": analysis_prompt}]}]
+
+            data = {
+                'contents': contents_array,
+                'generationConfig': {
+                    'temperature': 0.0,  # Deterministic SQL generation
+                    'maxOutputTokens': 4000,
+                    'topP': 0.95,
+                    'topK': 40
+                }
+            }
+
+            response = requests.post(
+                f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={AI_API_KEY}',
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                return get_default_athena_insights(user_query)
+
+            result = response.json()
+            ai_response = result['candidates'][0]['content']['parts'][0]['text']
+            logger.info(f"Athena SQL generated successfully: {ai_response[:200]}...")
+
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            return get_default_athena_insights(user_query)
         # --- End Gemini API call ---
 
         if ai_response.startswith("Error:"):

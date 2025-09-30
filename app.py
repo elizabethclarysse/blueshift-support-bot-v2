@@ -163,7 +163,7 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
         else:
             temp = temperature
 
-        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown.
+        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown with proper bold formatting for readability.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -171,40 +171,50 @@ INSTRUCTIONS:
 3. If no specific steps in docs, provide general navigation based on Blueshift platform knowledge.
 4. Combine documentation steps with your Blueshift platform knowledge for comprehensive guidance.
 5. Focus on practical troubleshooting guidance.
+6. **CRITICAL: Use bold markdown (**text**) for all section headers, key terms, important UI elements, menu paths, and button names to improve readability.**
 
 RESPONSE FORMAT:
 
-## Feature Overview
-Explain what this feature/issue is about and how it relates to the Blueshift platform.
+## **Feature Overview**
+Explain what this feature/issue is about and how it relates to the Blueshift platform. Use **bold** for key concepts and feature names.
 
-## Platform Navigation Steps
+## **Platform Navigation Steps**
 Based on the documentation above and Blueshift platform knowledge:
 
-[Provide numbered steps for accessing and configuring the feature in the UI]
-[Include specific menu paths, button names, and navigation instructions]
+1. Navigate to **Menu Name** → **Submenu** → **Feature**
+2. Use **bold** for all button names, field labels, and UI elements
+3. Include specific **menu paths**, **button names**, and navigation instructions in bold
 
-## Troubleshooting Steps
+## **Troubleshooting Steps**
 When this feature isn't working as expected:
 
 1. **Platform Configuration Checks**
-   - Verify settings and required fields
-   - Check user permissions and access
-   - Confirm campaign/trigger status
+   - **Verify settings and required fields** - use bold for key actions
+   - **Check user permissions and access**
+   - **Confirm campaign/trigger status**
 
 2. **Common Issues and Solutions**
-   - Typical problems and their fixes
-   - Configuration errors to look for
-   - Data flow issues to investigate
+   - **Typical problems** and their fixes (bold the problem type)
+   - **Configuration errors** to look for
+   - **Data flow issues** to investigate
 
 3. **Advanced Debugging**
-   - Database queries: customer_campaign_logs.campaign_execution_v3
-   - Error patterns: ExternalFetchError, ChannelLimitError, DeduplicationError
-   - API endpoints to test
+   - **Database queries:** customer_campaign_logs.campaign_execution_v3
+   - **Error patterns:** ExternalFetchError, ChannelLimitError, DeduplicationError
+   - **API endpoints** to test
 
-## Internal Notes
-- Main troubleshooting database: customer_campaign_logs.campaign_execution_v3
-- API Base: https://api.getblueshift.com
+## **Internal Notes**
+- **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
+- **API Base:** https://api.getblueshift.com
 - This is internal support guidance - provide actionable troubleshooting steps
+
+FORMATTING RULES:
+- Use **bold** for ALL section headers (even though they're already ## markdown headers)
+- Use **bold** for key terms, concepts, feature names, and technical terms
+- Use **bold** for UI elements: buttons, menus, fields, tabs, etc.
+- Use **bold** for error types, status names, and system messages
+- Use **bold** for database names, table names, and API endpoints
+- This makes the response much easier to scan and read
 """
 
         # FIX: Ensure the prompt explicitly tells the model to start the structured response
@@ -243,6 +253,61 @@ When this feature isn't working as expected:
     except Exception as e:
         return f"Error: {str(e)}"
 # --- END REPLACEMENT ---
+
+
+def generate_followup_suggestions(original_query, ai_response):
+    """Generate 3 relevant follow-up questions based on the query and response."""
+    if not AI_API_KEY:
+        return []
+
+    try:
+        prompt = f"""Based on this support query and response, generate exactly 3 short, relevant follow-up questions that a user might want to ask next.
+
+ORIGINAL QUERY: {original_query}
+
+AI RESPONSE: {ai_response[:1000]}
+
+Generate 3 natural follow-up questions that:
+1. Ask for more specific details or clarification
+2. Explore related features or troubleshooting steps
+3. Request practical examples or best practices
+
+Format your response as ONLY 3 questions, one per line, with no numbering, bullets, or extra text.
+Each question should be concise (max 10 words).
+
+Example format:
+How do I configure this in the UI?
+What are common errors with this feature?
+Can you show me an example implementation?"""
+
+        headers = {'Content-Type': 'application/json'}
+        contents_array = [{"role": "user", "parts": [{"text": prompt}]}]
+        data = {
+            "contents": contents_array,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 300
+            }
+        }
+
+        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
+        response = requests.post(url_with_key, headers=headers, json=data, timeout=15)
+
+        if response.status_code == 200:
+            response_json = response.json()
+            text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+
+            if text:
+                # Parse the response into individual questions
+                questions = [q.strip() for q in text.split('\n') if q.strip() and len(q.strip()) > 10]
+                # Return up to 3 questions
+                return questions[:3]
+
+        return []
+
+    except Exception as e:
+        logger.error(f"Error generating follow-up suggestions: {e}")
+        return []
 
 
 # --- FIX: JIRA Search - Switched to GET request for reliability ---
@@ -1704,10 +1769,14 @@ def handle_query():
         # Generate Athena insights
         athena_insights = generate_athena_insights(query)
 
+        # Generate suggested follow-up questions
+        suggested_followups = generate_followup_suggestions(query, ai_response)
+
         return jsonify({
             "response": ai_response,
             "resources": related_resources,
-            "athena_insights": athena_insights
+            "athena_insights": athena_insights,
+            "suggested_followups": suggested_followups
         })
 
     except Exception as e:
@@ -2014,11 +2083,29 @@ MAIN_TEMPLATE = '''
         }
 
         .response-content {
-            line-height: 1.6;
+            line-height: 1.8;
             color: #555555 !important;
-            white-space: pre-line;
-            font-weight: 500 !important;
+            font-weight: 400;
             font-size: 1.05em;
+        }
+
+        .response-content strong {
+            font-weight: 700;
+            color: #2c3e50;
+        }
+
+        .response-content h3 {
+            color: #2790FF;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+        }
+
+        .response-content h4 {
+            color: #2790FF;
+            margin-top: 15px;
+            margin-bottom: 8px;
+            font-size: 1.1em;
         }
 
         /* INTERACTIVE FOLLOW-UP SECTION */
@@ -2028,47 +2115,73 @@ MAIN_TEMPLATE = '''
             padding: 25px;
             margin: 25px 0;
             border-left: 5px solid #2790FF;
+            display: none;
         }
 
         .followup-section h4 {
             color: #2790FF;
             margin-top: 0;
             font-size: 1.2em;
+            margin-bottom: 10px;
         }
 
-        .followup-container {
+        .followup-section p.subtitle {
+            margin: 0 0 15px 0;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .followup-suggestions {
             display: flex;
-            gap: 10px;
+            flex-wrap: wrap;
+            gap: 12px;
             margin-top: 15px;
         }
 
-        #followupInput {
-            flex: 1;
-            padding: 12px 20px;
+        .followup-chip {
+            background: white;
             border: 2px solid #2790FF;
+            color: #2790FF;
+            padding: 12px 20px;
             border-radius: 25px;
-            font-size: 14px;
-            outline: none;
+            font-size: 0.9rem;
+            cursor: pointer;
             transition: all 0.3s ease;
             font-family: 'Calibri', sans-serif;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
         }
 
-        #followupInput:focus {
-            border-color: #2790FF;
-            box-shadow: 0 0 0 3px rgba(39, 144, 255, 0.1);
+        .followup-chip:hover {
+            background: #2790FF;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(39, 144, 255, 0.3);
+        }
+
+        .followup-chip:active {
+            transform: translateY(0);
+        }
+
+        .followup-chip::before {
+            content: "→";
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        /* Deprecated old input style */
+        .followup-container {
+            display: none;
+        }
+
+        #followupInput {
+            display: none;
         }
 
         #followupBtn {
-            background: linear-gradient(45deg, #2790FF, #4da6ff);
-            padding: 12px 25px;
-            border-radius: 25px;
-            font-size: 14px;
-            margin-left: 0;
-            font-family: 'Calibri', sans-serif;
-        }
-
-        #followupBtn:hover {
-            background: linear-gradient(45deg, #1976d2, #2790FF);
+            display: none;
         }
 
         .followup-response {
@@ -2223,14 +2336,12 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
-            <div class="followup-section">
+            <div class="followup-section" id="followupSection">
                 <h4>Have a follow-up question?</h4>
-                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
-                <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
-                    <button id="followupBtn">Ask</button>
+                <p class="subtitle">Click on a suggested question to continue exploring this topic:</p>
+                <div class="followup-suggestions" id="followupSuggestions">
+                    <!-- Follow-up suggestions will be dynamically inserted here -->
                 </div>
-                <div id="followupResponse" class="followup-response"></div>
             </div>
 
             <div id="athenaSection" class="athena-section" style="display: none;">
@@ -2297,6 +2408,34 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
+        // Function to convert markdown formatting to HTML
+        function formatMarkdownResponse(text) {
+            if (!text) return '';
+
+            // Escape HTML to prevent XSS
+            let formatted = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+
+            // Convert markdown bold **text** to HTML <strong>text</strong>
+            formatted = formatted.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+
+            // Convert ## headers to HTML headers
+            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1</h3>');
+
+            // Convert ### headers to HTML headers
+            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1</h4>');
+
+            // Convert line breaks to <br>
+            formatted = formatted.replace(/\n/g, '<br>');
+
+            // Convert bullet points (- item) to actual list items
+            formatted = formatted.replace(/^- (.+)$/gm, '&nbsp;&nbsp;• $1');
+
+            return formatted;
+        }
+
         document.getElementById('searchBtn').addEventListener('click', function() {
             const query = document.getElementById('queryInput').value.trim();
             if (!query) {
@@ -2320,8 +2459,8 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response
-                document.getElementById('responseContent').textContent = data.response;
+                // Show response with markdown formatting
+                document.getElementById('responseContent').innerHTML = formatMarkdownResponse(data.response);
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');
@@ -2332,6 +2471,11 @@ MAIN_TEMPLATE = '''
                 // Show Athena insights if available
                 if (data.athena_insights) {
                     showAthenaInsights(data.athena_insights);
+                }
+
+                // Show follow-up suggestions if available
+                if (data.suggested_followups && data.suggested_followups.length > 0) {
+                    showFollowupSuggestions(data.suggested_followups);
                 }
 
                 // Reset button
@@ -2345,41 +2489,32 @@ MAIN_TEMPLATE = '''
             });
         });
 
-        document.getElementById('followupBtn').addEventListener('click', function() {
-            const followupQuery = document.getElementById('followupInput').value.trim();
-            if (!followupQuery) {
-                alert('Please enter a follow-up question');
-                return;
-            }
+        function showFollowupSuggestions(suggestions) {
+            const followupSection = document.getElementById('followupSection');
+            const followupSuggestions = document.getElementById('followupSuggestions');
 
-            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
-            document.getElementById('followupBtn').disabled = true;
+            // Clear any existing suggestions
+            followupSuggestions.innerHTML = '';
 
-            fetch('/followup', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ query: followupQuery })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
+            // Create clickable chips for each suggestion
+            suggestions.forEach(suggestion => {
+                const chip = document.createElement('button');
+                chip.className = 'followup-chip';
+                chip.textContent = suggestion;
+                chip.onclick = function() {
+                    // When clicked, trigger a new query with this suggestion
+                    document.getElementById('queryInput').value = suggestion;
+                    document.getElementById('searchBtn').click();
 
-                document.getElementById('followupResponse').textContent = data.response;
-                document.getElementById('followupResponse').style.display = 'block';
-                document.getElementById('followupInput').value = '';
-
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
+                    // Scroll to top to see the new results
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                };
+                followupSuggestions.appendChild(chip);
             });
-        });
+
+            // Show the follow-up section
+            followupSection.style.display = 'block';
+        }
 
         function showResources(resources) {
             const sourcesGrid = document.getElementById('sourcesGrid');
@@ -2423,11 +2558,7 @@ MAIN_TEMPLATE = '''
             }
         });
 
-        document.getElementById('followupInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                document.getElementById('followupBtn').click();
-            }
-        });
+        // Removed old followup input event listener - now using interactive chips
 
         function showAthenaInsights(athenaData) {
             // Show the Athena section

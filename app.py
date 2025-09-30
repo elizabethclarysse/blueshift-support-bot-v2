@@ -603,12 +603,22 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
                 if "url" in r:
                     page_url = r["url"]
                 elif "_links" in r and "webui" in r["_links"]:
-                    page_url = f"{CONFLUENCE_URL.rstrip('/wiki')}{r['_links']['webui']}"
+                    webui_path = r['_links']['webui']
+                    # Ensure proper URL construction
+                    base_url = CONFLUENCE_URL.rstrip('/wiki').rstrip('/')
+                    page_url = f"{base_url}{webui_path}"
                 else:
                     continue  # Skip if we can't get a URL
             else:
-                # Use the most common and reliable URL format
-                page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
+                # Use Confluence Cloud URL format: /wiki/spaces/SPACE/pages/PAGEID/Title
+                # But first try to get the direct link from _links if available
+                if "_links" in r and "webui" in r["_links"]:
+                    webui_path = r['_links']['webui']
+                    base_url = CONFLUENCE_URL.rstrip('/wiki').rstrip('/')
+                    page_url = f"{base_url}{webui_path}"
+                else:
+                    # Fallback to direct page ID URL (works in most Confluence Cloud instances)
+                    page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
 
             formatted.append({"title": title, "url": page_url})
 

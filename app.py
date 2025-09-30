@@ -2419,7 +2419,7 @@ MAIN_TEMPLATE = '''
                 .replace(/>/g, '&gt;');
 
             // Convert markdown bold **text** to HTML <strong>text</strong>
-            formatted = formatted.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
             // Convert ## headers to HTML headers
             formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1</h3>');

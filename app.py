@@ -1060,8 +1060,28 @@ def get_available_tables(database_name):
         print(f"Error getting tables: {e}")
         return []
 
-def sample_message_patterns(user_query, database_name):
-    """Sample the database to find actual message patterns related to the user's query"""
+# Cache for common message patterns to avoid repeated database queries
+MESSAGE_PATTERN_CACHE = {
+    'quiet': 'QuietHours',
+    'facebook': 'FacebookAudienceSync',
+    'external': 'ExternalFetchError',
+    'channel': 'ChannelLimitError',
+    'dedup': 'DeduplicationError',
+    'dedupe': 'DeduplicationError',
+    'deduplication': 'DeduplicationError',
+    'bounce': 'SoftBounce',
+    'fetch': 'ExternalFetchError',
+    'sync': 'FacebookAudienceSync',
+    'audience': 'FacebookAudienceSync',
+    'trigger': 'TriggerEvaluation',
+    'suppression': 'SuppressionCheck'
+}
+
+def sample_message_patterns(user_query, database_name, timeout_seconds=5):
+    """Sample the database to find actual message patterns related to the user's query.
+
+    Uses caching for common patterns and has a fast timeout to avoid delays.
+    """
     try:
         # Extract key terms from user query
         STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
@@ -1070,22 +1090,58 @@ def sample_message_patterns(user_query, database_name):
         if not words:
             return None
 
-        logger.info(f"Sampling database for patterns related to: {words}")
+        # Check cache first - instant lookup
+        search_term = words[0].lower()
+        if search_term in MESSAGE_PATTERN_CACHE:
+            cached_pattern = MESSAGE_PATTERN_CACHE[search_term]
+            logger.info(f"Using cached pattern for '{search_term}': {cached_pattern}")
+            return cached_pattern
 
-        # Try to find messages containing key terms
-        search_term = words[0]  # Use first meaningful word
+        # Check if any word matches cache
+        for word in words:
+            if word.lower() in MESSAGE_PATTERN_CACHE:
+                cached_pattern = MESSAGE_PATTERN_CACHE[word.lower()]
+                logger.info(f"Using cached pattern for '{word}': {cached_pattern}")
+                return cached_pattern
 
+        logger.info(f"No cached pattern found, sampling database for: {words}")
+
+        # OPTIMIZED: Use recent partition and limit for speed
         sample_query = f"""
-        select distinct message
+        select message
         from {database_name}.campaign_execution_v3
-        where lower(message) like '%{search_term.lower()}%'
-        and file_date >= '2024-12-01'
-        limit 10
+        where lower(message) like '%{search_term}%'
+        and file_date >= date_add('day', -7, current_date)
+        limit 3
         """
 
-        result = query_athena(sample_query, database_name, f"Sample messages for {search_term}")
+        # Add timeout wrapper using threading
+        import threading
+        result_container = [None]
+        error_container = [None]
 
-        if result.get('data') and len(result['data']) > 0:
+        def run_query():
+            try:
+                result_container[0] = query_athena(sample_query, database_name, f"Sample messages for {search_term}")
+            except Exception as e:
+                error_container[0] = e
+
+        query_thread = threading.Thread(target=run_query)
+        query_thread.daemon = True
+        query_thread.start()
+        query_thread.join(timeout=timeout_seconds)
+
+        if query_thread.is_alive():
+            logger.warning(f"Database sampling timed out after {timeout_seconds}s, using AI inference")
+            return None
+
+        if error_container[0]:
+            logger.error(f"Database sampling error: {error_container[0]}")
+            return None
+
+        result = result_container[0]
+
+        if result and result.get('data') and len(result['data']) > 0:
             # Extract patterns from actual messages
             messages = [row.get('message', '') for row in result['data']]
             logger.info(f"Found {len(messages)} sample messages containing '{search_term}'")
@@ -1101,6 +1157,8 @@ def sample_message_patterns(user_query, database_name):
                         if pattern:
                             actual_term = pattern.group(0)
                             logger.info(f"Found actual message pattern: {actual_term}")
+                            # Cache the result for future queries
+                            MESSAGE_PATTERN_CACHE[search_term] = actual_term
                             return actual_term
 
         logger.info(f"No message patterns found for '{search_term}', AI will guess")

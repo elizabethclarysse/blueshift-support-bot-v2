@@ -1206,83 +1206,22 @@ def sample_message_patterns(user_query, database_name, timeout_seconds=5):
         logger.error(f"Error sampling message patterns: {e}")
         return None
 
-def build_query_from_database_analysis(user_query, database_name):
-    """Build accurate Athena query using pattern matching - no slow database queries needed"""
-    try:
-        logger.info(f"Building query from pattern analysis for: {user_query}")
-
-        # Determine query type and message pattern
-        query_lower = user_query.lower()
-
-        # Check cache for message pattern
-        message_pattern = None
-        for word in query_lower.split():
-            if word in MESSAGE_PATTERN_CACHE:
-                message_pattern = MESSAGE_PATTERN_CACHE[word]
-                logger.info(f"Found pattern for '{word}': {message_pattern}")
-                break
-
-        # Build query based on question type - with REAL structure
-        if 'how many' in query_lower or 'count' in query_lower:
-            # Volume analysis query
-            query_template = f"""select
-  file_date,
-  count(distinct user_uuid) as affected_users,
-  count(*) as total_occurrences,
-  log_level
-from {database_name}.campaign_execution_v3
-where account_uuid = 'YOUR_ACCOUNT_UUID'
-and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
-{f"and message like '%{message_pattern}%'" if message_pattern else ""}
-and file_date >= date_add('day', -14, current_date)
-group by file_date, log_level
-order by file_date desc"""
-
-            explanation = f"**Volume Analysis Query**\n\nThis query counts {f'{message_pattern} occurrences' if message_pattern else 'events'} per day, grouped by error level.\n\n**What it shows:**\n- Daily affected user counts\n- Total occurrences per day\n- Breakdown by log level (ERROR, WARNING, INFO)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
-
-        elif 'error' in query_lower or 'fail' in query_lower or 'issue' in query_lower:
-            # Error investigation query
-            query_template = f"""select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
-from {database_name}.campaign_execution_v3
-where account_uuid = 'YOUR_ACCOUNT_UUID'
-and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
-and log_level = 'ERROR'
-{f"and message like '%{message_pattern}%'" if message_pattern else ""}
-and file_date >= date_add('day', -7, current_date)
-order by timestamp desc
-limit 200"""
-
-            explanation = f"**Error Investigation Query**\n\nThis query finds recent ERROR logs{f' related to {message_pattern}' if message_pattern else ''}.\n\n**Columns included:**\n- timestamp, user_uuid, campaign_uuid (when/who/what)\n- trigger_uuid (which trigger)\n- message (error details)\n- execution_key (links related logs)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
-
-        else:
-            # Feature-specific or journey query
-            query_template = f"""select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
-from {database_name}.campaign_execution_v3
-where account_uuid = 'YOUR_ACCOUNT_UUID'
-and campaign_uuid = 'YOUR_CAMPAIGN_UUID'
-{f"and message like '%{message_pattern}%'" if message_pattern else ""}
-and file_date >= date_add('day', -7, current_date)
-order by timestamp asc
-limit 500"""
-
-            explanation = f"**Feature Troubleshooting Query**\n\nThis query shows chronological progression{f' of {message_pattern} events' if message_pattern else ''}.\n\n**Columns included:**\n- timestamp (when it happened)\n- user_uuid, campaign_uuid, trigger_uuid (who/what/which)\n- message (event details)\n- log_level (INFO/WARNING/ERROR)\n- worker_name (which server)\n\n**Ordered by:** timestamp ASC (shows progression over time)\n\n**To use:** Replace YOUR_ACCOUNT_UUID and YOUR_CAMPAIGN_UUID with your actual values."
-
-        return {
-            'database': database_name,
-            'sql_query': query_template.strip(),
-            'explanation': explanation,
-            'has_pattern': message_pattern is not None,
-            'pattern': message_pattern
-        }
-
-    except Exception as e:
-        logger.error(f"Error building query from database: {e}")
-        return None
-
 def generate_athena_insights(user_query):
-    """Generate data insights by querying AWS Athena directly - no AI needed!"""
+    """Generate data insights using Athena queries based on user query with improved relevance"""
     try:
-        logger.info(f"Generating Athena query from database analysis: '{user_query}'")
+        # Same stop words filtering as other searches
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+
+        def clean_words(words):
+            return [w for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        # Extract key terms from user query
+        words = user_query.strip().split()
+        clean_query_words = clean_words(words)
+        if not clean_query_words:
+            clean_query_words = words
+
+        logger.info(f"Athena query generation - Original: '{user_query}' -> Key terms: {clean_query_words}")
 
         # Get available tables first
         database_name = ATHENA_DATABASES[0]  # Use first database
@@ -1323,26 +1262,194 @@ def generate_athena_insights(user_query):
         else:
             logger.info("No cached pattern found, AI will infer from query")
 
-        # USE AWS ATHENA DIRECTLY - No AI needed for query generation!
-        logger.info("Using AWS Athena to build query from real database...")
-        database_result = build_query_from_database_analysis(user_query, database_name)
+        # --- Use the new call_gemini_api for analysis ---
+        # FIX: Explicitly enforce the full table name in the template examples.
+        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}{pattern_context}
 
-        if database_result:
-            logger.info("Successfully built query from database analysis")
-            # Test and validate the query
-            validated = validate_and_test_query(
-                database_result['sql_query'],
-                database_result['database'],
-                user_query,
-                database_result['explanation']
-            )
-            if validated:
-                return validated
-            else:
-                return database_result
-        else:
-            logger.warning("Database analysis failed, using fallback")
+AVAILABLE DATA:
+- Database: {database_name}
+- Main table: customer_campaign_logs.campaign_execution_v3
+- Key columns: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name, transaction_uuid, execution_key
+
+ANALYZE THE USER'S QUESTION and generate a query that matches actual Blueshift support query patterns.
+
+IMPORTANT: Generate DETAILED, CONTEXTUAL queries based on the question type.
+
+QUERY PATTERNS BY SCENARIO:
+
+1. USER JOURNEY / "Why didn't user get message?" / Feature troubleshooting:
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and user_uuid = 'client_user_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp asc
+limit 500
+
+WHY THIS QUERY: Shows complete user journey through campaign - all evaluations, checks, errors, successes in chronological order.
+INCLUDES: trigger_uuid (which trigger fired), log_level (errors vs info), worker_name (which server processed)
+
+2. ERROR INVESTIGATION / "Why are messages failing?":
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and log_level = 'ERROR'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp desc
+limit 200
+
+WHY THIS QUERY: Focuses on errors only, recent first. execution_key links related log entries.
+
+3. FEATURE SPECIFIC / "Quiet hours not working" / "Facebook sync issues":
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and message like '%{feature_pattern}%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp asc
+limit 300
+
+WHY THIS QUERY: Filters for specific feature logs, shows chronological progression of feature behavior.
+
+4. VOLUME ANALYSIS / "How many users affected?":
+select
+  file_date,
+  count(distinct user_uuid) as affected_users,
+  count(*) as total_occurrences,
+  log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and message like '%{error_pattern}%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+group by file_date, log_level
+order by file_date desc
+
+WHY THIS QUERY: Shows impact over time - how many users hit the issue per day.
+
+5. CAMPAIGN PERFORMANCE / "Is campaign sending?":
+select
+  log_level,
+  count(*) as count,
+  count(distinct user_uuid) as unique_users
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+group by log_level
+order by count desc
+
+WHY THIS QUERY: Summary view - how many ERRORs vs INFOs, overall campaign health.
+
+ANALYZE THE USER'S QUESTION AND CHOOSE THE RIGHT PATTERN:
+- Journey questions → Pattern 1 (detailed user journey)
+- Error questions → Pattern 2 (error-focused)
+- Feature questions → Pattern 3 (feature-specific)
+- "How many" questions → Pattern 4 (volume analysis)
+- "Is it working" questions → Pattern 5 (summary stats)
+
+CRITICAL QUERY RULES:
+1. **Include relevant columns** based on query type:
+   - User journey: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+   - Error investigation: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, execution_key
+   - Volume analysis: Use COUNT, GROUP BY, aggregations
+   - Feature-specific: timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+
+2. **Use appropriate WHERE conditions**:
+   - Always: account_uuid, file_date range
+   - Journey queries: Add user_uuid, campaign_uuid
+   - Error queries: Add log_level = 'ERROR'
+   - Feature queries: Add message like '%pattern%' (ONLY ONE)
+
+3. **Set appropriate LIMIT**:
+   - User journey: 500 (need full story)
+   - Error investigation: 200 (enough to see patterns)
+   - Feature-specific: 300 (see progression)
+   - Volume analysis: No limit needed (aggregated)
+
+4. **Use correct ORDER BY**:
+   - Journey queries: timestamp ASC (chronological story)
+   - Error queries: timestamp DESC (recent errors first)
+   - Volume queries: date DESC or count DESC
+
+5. **Date ranges**:
+   - Use: file_date >= '2024-12-01' AND file_date < '2024-12-15'
+   - This ensures partition pruning for performance
+
+EXAMPLE OUTPUTS:
+
+For "Why didn't user 123 receive message?":
+```sql
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level, worker_name
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and user_uuid = 'client_user_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp asc
+limit 500
+```
+
+For "How many users are getting channel limit errors?":
+```sql
+select
+  file_date,
+  count(distinct user_uuid) as affected_users,
+  count(*) as total_occurrences
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and message like '%ChannelLimitError%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+group by file_date
+order by file_date desc
+```
+
+For "Are there Facebook sync errors?":
+```sql
+select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and campaign_uuid = 'client_campaign_uuid'
+and log_level = 'ERROR'
+and message like '%FacebookAudienceSync%'
+and file_date >= '2024-12-01'
+and file_date < '2024-12-15'
+order by timestamp desc
+limit 200
+```
+
+Generate a query specifically for: "{user_query}"
+
+Format your response as:
+DATABASE: {database_name}
+
+SQL_QUERY:
+[Write the exact format shown above - each clause on its own line with proper spacing]
+
+INSIGHT_EXPLANATION:
+[Brief explanation of what this query searches for and why it helps with the user's question]"""
+
+        # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
+        ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
+        # --- End Gemini API call ---
+
+        if ai_response.startswith("Error:"):
+            logger.error(f"Athena AI API error: {ai_response}")
             return get_default_athena_insights(user_query)
+
+        logger.info(f"Athena AI response: {ai_response[:200]}...")
+        return parse_athena_analysis(ai_response, user_query)
 
     except Exception as e:
         logger.error(f"Athena insights generation error: {e}")
@@ -1447,46 +1554,18 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
 
             logger.info(f"✅ Query validated successfully! Found {len(sample_data)} sample rows")
 
-            # Extract real UUIDs from sample data to show as examples
-            example_account_uuid = None
-            example_campaign_uuid = None
-            example_user_uuid = None
-
-            if sample_data and len(sample_data) > 0:
-                for row in sample_data:
-                    if not example_account_uuid and 'account_uuid' in row:
-                        example_account_uuid = row.get('account_uuid')
-                    if not example_campaign_uuid and 'campaign_uuid' in row:
-                        example_campaign_uuid = row.get('campaign_uuid')
-                    if not example_user_uuid and 'user_uuid' in row:
-                        example_user_uuid = row.get('user_uuid')
-
-            # Build enhanced explanation with sample results and real UUIDs
+            # Build enhanced explanation with sample results
             enhanced_explanation = explanation + "\n\n"
 
             if sample_data and len(sample_data) > 0:
                 enhanced_explanation += f"✅ **Query Validated**: This query successfully returns results from your database.\n\n"
-
-                # Show example UUIDs first
-                enhanced_explanation += "**Example UUIDs from your database:**\n"
-                if example_account_uuid:
-                    enhanced_explanation += f"- account_uuid: `{example_account_uuid}`\n"
-                if example_campaign_uuid:
-                    enhanced_explanation += f"- campaign_uuid: `{example_campaign_uuid}`\n"
-                if example_user_uuid:
-                    enhanced_explanation += f"- user_uuid: `{example_user_uuid}`\n"
-                enhanced_explanation += "\n"
-
                 enhanced_explanation += f"**Sample Results Preview** ({len(sample_data)} rows):\n"
                 for i, row in enumerate(sample_data[:3], 1):
                     enhanced_explanation += f"\n{i}. "
                     # Show first few columns
-                    for col in columns[:4]:
+                    for col in columns[:3]:
                         value = row.get(col, 'N/A')
-                        # Truncate long values
-                        if len(str(value)) > 60:
-                            value = str(value)[:60] + "..."
-                        enhanced_explanation += f"{col}: {value} | "
+                        enhanced_explanation += f"{col}: {str(value)[:50]}... | "
                     enhanced_explanation = enhanced_explanation.rstrip(' | ')
             else:
                 enhanced_explanation += "⚠️ **Query is valid but returned no results**. This might mean:\n"
@@ -1494,7 +1573,7 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
                 enhanced_explanation += "- The date range needs adjustment\n"
                 enhanced_explanation += "- Try a broader search term\n"
 
-            enhanced_explanation += "\n\n💡 **Next Steps**: Copy the query above and replace the placeholder UUIDs with the examples shown (or your specific case values), and adjust the date range as needed."
+            enhanced_explanation += "\n\n💡 **Next Steps**: Copy this query and replace placeholders with your specific account_uuid, campaign_uuid, user_uuid, and date range."
 
             return {
                 'database': database_name,
@@ -2144,9 +2223,11 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
-            <div class="followup-section" style="margin-top: 15px;">
+            <div class="followup-section">
+                <h4>Have a follow-up question?</h4>
+                <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.9rem;">Ask for clarification, more details, or related questions about the same topic.</p>
                 <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Ask me another question or for more details..." />
+                    <input type="text" id="followupInput" placeholder="Ask a follow-up question..." />
                     <button id="followupBtn">Ask</button>
                 </div>
                 <div id="followupResponse" class="followup-response"></div>
@@ -2239,9 +2320,8 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response with conversational prompt (safely)
-                const conversationalPrompt = "\n\n---\n\nDoes this help resolve your issue? Feel free to ask me for more details below!";
-                document.getElementById('responseContent').textContent = data.response + conversationalPrompt;
+                // Show response
+                document.getElementById('responseContent').textContent = data.response;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');
@@ -2265,60 +2345,41 @@ MAIN_TEMPLATE = '''
             });
         });
 
-        // Follow-up button - add debug logging
-        const followupBtn = document.getElementById('followupBtn');
-        console.log('Follow-up button element:', followupBtn);
+        document.getElementById('followupBtn').addEventListener('click', function() {
+            const followupQuery = document.getElementById('followupInput').value.trim();
+            if (!followupQuery) {
+                alert('Please enter a follow-up question');
+                return;
+            }
 
-        if (followupBtn) {
-            followupBtn.addEventListener('click', function(e) {
-                e.preventDefault();
-                console.log('Follow-up button clicked!');
+            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
+            document.getElementById('followupBtn').disabled = true;
 
-                const followupQuery = document.getElementById('followupInput').value.trim();
-                console.log('Follow-up query value:', followupQuery);
-
-                if (!followupQuery) {
-                    alert('Please enter a follow-up question');
+            fetch('/followup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: followupQuery })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
                     return;
                 }
 
-                document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
-                document.getElementById('followupBtn').disabled = true;
+                document.getElementById('followupResponse').textContent = data.response;
+                document.getElementById('followupResponse').style.display = 'block';
+                document.getElementById('followupInput').value = '';
 
-                console.log('Sending follow-up request to /followup');
-                fetch('/followup', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ query: followupQuery })
-                })
-                .then(response => {
-                    console.log('Follow-up response:', response);
-                    return response.json();
-                })
-                .then(data => {
-                    console.log('Follow-up data:', data);
-                    if (data.error) {
-                        alert('Error: ' + data.error);
-                        return;
-                    }
-
-                    document.getElementById('followupResponse').textContent = data.response;
-                    document.getElementById('followupResponse').style.display = 'block';
-                    document.getElementById('followupInput').value = '';
-
-                    document.getElementById('followupBtn').innerHTML = 'Ask';
-                    document.getElementById('followupBtn').disabled = false;
-                })
-                .catch(error => {
-                    console.error('Follow-up fetch error:', error);
-                    alert('Error: ' + error);
-                    document.getElementById('followupBtn').innerHTML = 'Ask';
-                    document.getElementById('followupBtn').disabled = false;
-                });
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
             });
-        } else {
-            console.error('ERROR: Follow-up button not found in DOM!');
-        }
+        });
 
         function showResources(resources) {
             const sourcesGrid = document.getElementById('sourcesGrid');

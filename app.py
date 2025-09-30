@@ -2189,18 +2189,7 @@ MAIN_TEMPLATE = '''
             font-size: 1.1em;
         }
 
-        /* Deprecated old input style */
-        .followup-container {
-            display: none;
-        }
-
-        #followupInput {
-            display: none;
-        }
-
-        #followupBtn {
-            display: none;
-        }
+        /* Follow-up input styling is inline in HTML */
 
         .followup-response {
             margin-top: 20px;

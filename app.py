@@ -1954,6 +1954,7 @@ MAIN_TEMPLATE = '''
     <link rel="icon" type="image/png" sizes="32x32" href="/blueshift-favicon.png">
     <link rel="shortcut icon" href="/favicon.ico">
     <link rel="apple-touch-icon" sizes="32x32" href="/blueshift-favicon.png">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         body {
             font-family: 'Calibri', sans-serif;
@@ -2431,8 +2432,12 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response
-                document.getElementById('responseContent').textContent = data.response;
+                // Show response with markdown rendering
+                if (typeof marked !== 'undefined') {
+                    document.getElementById('responseContent').innerHTML = marked.parse(data.response);
+                } else {
+                    document.getElementById('responseContent').textContent = data.response;
+                }
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');

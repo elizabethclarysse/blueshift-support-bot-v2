@@ -1726,6 +1726,28 @@ def parse_athena_analysis(ai_response, user_query):
 
         # Validate and refine the query before returning
         if sql_query.strip():
+            # Remove duplicate file_date conditions and remove file_date < conditions (only keep file_date >=)
+            sql_lines = sql_query.strip().split('\n')
+            seen_file_date_gte = False
+            cleaned_lines = []
+
+            for line in sql_lines:
+                line_lower = line.lower().strip()
+                # Skip duplicate file_date >= lines (keep only first)
+                if 'file_date >=' in line_lower:
+                    if not seen_file_date_gte:
+                        cleaned_lines.append(line)
+                        seen_file_date_gte = True
+                    else:
+                        logger.info(f"Removed duplicate file_date >= line: {line.strip()}")
+                # Remove ALL file_date < lines
+                elif 'file_date <' in line_lower:
+                    logger.info(f"Removed file_date < line: {line.strip()}")
+                else:
+                    cleaned_lines.append(line)
+
+            sql_query = '\n'.join(cleaned_lines)
+
             # Ensure we use placeholder values instead of real data
             safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)
 

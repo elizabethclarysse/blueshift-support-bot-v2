@@ -258,9 +258,12 @@ FORMATTING RULES:
 def generate_followup_suggestions(original_query, ai_response):
     """Generate 3 relevant follow-up questions based on the query and response."""
     if not AI_API_KEY:
-        return []
+        logger.warning("No AI API key - returning default follow-up suggestions")
+        return get_default_followup_suggestions(original_query)
 
     try:
+        logger.info(f"Generating follow-up suggestions for query: {original_query[:50]}...")
+
         prompt = f"""Based on this support query and response, generate exactly 3 short, relevant follow-up questions that a user might want to ask next.
 
 ORIGINAL QUERY: {original_query}
@@ -297,17 +300,31 @@ Can you show me an example implementation?"""
             response_json = response.json()
             text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
 
+            logger.info(f"Follow-up API response: {text[:200]}")
+
             if text:
                 # Parse the response into individual questions
                 questions = [q.strip() for q in text.split('\n') if q.strip() and len(q.strip()) > 10]
                 # Return up to 3 questions
-                return questions[:3]
+                if len(questions) > 0:
+                    logger.info(f"Generated {len(questions)} follow-up suggestions")
+                    return questions[:3]
 
-        return []
+        logger.warning(f"API returned no valid follow-up suggestions, using defaults")
+        return get_default_followup_suggestions(original_query)
 
     except Exception as e:
         logger.error(f"Error generating follow-up suggestions: {e}")
-        return []
+        return get_default_followup_suggestions(original_query)
+
+
+def get_default_followup_suggestions(query):
+    """Return default follow-up suggestions when AI generation fails."""
+    return [
+        "How do I configure this in the platform?",
+        "What are common errors with this feature?",
+        "Can you show me troubleshooting steps?"
+    ]
 
 
 # --- FIX: JIRA Search - Switched to GET request for reliability ---

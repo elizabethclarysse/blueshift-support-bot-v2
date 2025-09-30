@@ -1619,11 +1619,13 @@ LOOK UP AT THE TOP OF THIS PROMPT - DID YOU SEE "MANDATORY MESSAGE PATTERN DETEC
 - ALWAYS include: account_uuid, campaign_uuid, file_date range
 - For errors: MUST have log_level = 'ERROR'
 - For message patterns: MUST have message like '%Pattern%' (if pattern detected above)
+- **IMPORTANT: Use file_date range ONLY ONCE** - file_date >= '2024-12-01' and file_date < '2024-12-15' (do NOT duplicate these lines)
 
 **NEVER generate a generic query like:**
 - ❌ SELECT timestamp, message FROM ... WHERE log_level = 'ERROR' LIMIT 10
 - ❌ Any query without message LIKE when a pattern was detected at the top
 - ❌ Any query without file_date range
+- ❌ Any query with duplicate file_date conditions
 
 Format your response as:
 DATABASE: {database_name}
@@ -1816,7 +1818,7 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
             return {
                 'database': database_name,
                 'sql_query': sql_query,
-                'explanation': explanation + f"\n\n⚠️ **Validation Note**: Initial test of this query encountered an issue ({error_msg}). You may need to adjust the query parameters for your specific use case.",
+                'explanation': explanation,
                 'results': {"note": "Query validation failed - may need adjustments", "data": []},
                 'has_data': False
             }

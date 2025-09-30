@@ -2144,10 +2144,10 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
-            <div class="followup-section" style="margin-top: 0; padding-top: 0; border-top: none;">
+            <div class="followup-section" style="margin-top: 15px;">
                 <div class="followup-container">
-                    <input type="text" id="followupInput" placeholder="Does this help? Or ask me another question..." />
-                    <button id="followupBtn">Send</button>
+                    <input type="text" id="followupInput" placeholder="Ask me another question or for more details..." />
+                    <button id="followupBtn">Ask</button>
                 </div>
                 <div id="followupResponse" class="followup-response"></div>
             </div>
@@ -2239,9 +2239,9 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response with conversational prompt
-                const responseWithPrompt = data.response + '\n\n---\n\nDoes this help resolve your issue? Feel free to ask me for more details or clarification!';
-                document.getElementById('responseContent').textContent = responseWithPrompt;
+                // Show response with conversational prompt (safely)
+                const conversationalPrompt = "\n\n---\n\nDoes this help resolve your issue? Feel free to ask me for more details below!";
+                document.getElementById('responseContent').textContent = data.response + conversationalPrompt;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');
@@ -2306,13 +2306,13 @@ MAIN_TEMPLATE = '''
                     document.getElementById('followupResponse').style.display = 'block';
                     document.getElementById('followupInput').value = '';
 
-                    document.getElementById('followupBtn').innerHTML = 'Send';
+                    document.getElementById('followupBtn').innerHTML = 'Ask';
                     document.getElementById('followupBtn').disabled = false;
                 })
                 .catch(error => {
                     console.error('Follow-up fetch error:', error);
                     alert('Error: ' + error);
-                    document.getElementById('followupBtn').innerHTML = 'Send';
+                    document.getElementById('followupBtn').innerHTML = 'Ask';
                     document.getElementById('followupBtn').disabled = false;
                 });
             });

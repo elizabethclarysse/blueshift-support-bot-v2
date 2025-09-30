@@ -2265,41 +2265,60 @@ MAIN_TEMPLATE = '''
             });
         });
 
-        document.getElementById('followupBtn').addEventListener('click', function() {
-            const followupQuery = document.getElementById('followupInput').value.trim();
-            if (!followupQuery) {
-                alert('Please enter a follow-up question');
-                return;
-            }
+        // Follow-up button - add debug logging
+        const followupBtn = document.getElementById('followupBtn');
+        console.log('Follow-up button element:', followupBtn);
 
-            document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
-            document.getElementById('followupBtn').disabled = true;
+        if (followupBtn) {
+            followupBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                console.log('Follow-up button clicked!');
 
-            fetch('/followup', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ query: followupQuery })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert('Error: ' + data.error);
+                const followupQuery = document.getElementById('followupInput').value.trim();
+                console.log('Follow-up query value:', followupQuery);
+
+                if (!followupQuery) {
+                    alert('Please enter a follow-up question');
                     return;
                 }
 
-                document.getElementById('followupResponse').textContent = data.response;
-                document.getElementById('followupResponse').style.display = 'block';
-                document.getElementById('followupInput').value = '';
+                document.getElementById('followupBtn').innerHTML = '<span class="loading"></span> Processing...';
+                document.getElementById('followupBtn').disabled = true;
 
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-                document.getElementById('followupBtn').innerHTML = 'Ask';
-                document.getElementById('followupBtn').disabled = false;
+                console.log('Sending follow-up request to /followup');
+                fetch('/followup', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ query: followupQuery })
+                })
+                .then(response => {
+                    console.log('Follow-up response:', response);
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Follow-up data:', data);
+                    if (data.error) {
+                        alert('Error: ' + data.error);
+                        return;
+                    }
+
+                    document.getElementById('followupResponse').textContent = data.response;
+                    document.getElementById('followupResponse').style.display = 'block';
+                    document.getElementById('followupInput').value = '';
+
+                    document.getElementById('followupBtn').innerHTML = 'Send';
+                    document.getElementById('followupBtn').disabled = false;
+                })
+                .catch(error => {
+                    console.error('Follow-up fetch error:', error);
+                    alert('Error: ' + error);
+                    document.getElementById('followupBtn').innerHTML = 'Send';
+                    document.getElementById('followupBtn').disabled = false;
+                });
             });
-        });
+        } else {
+            console.error('ERROR: Follow-up button not found in DOM!');
+        }
 
         function showResources(resources) {
             const sourcesGrid = document.getElementById('sourcesGrid');

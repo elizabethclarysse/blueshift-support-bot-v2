@@ -1373,12 +1373,19 @@ def generate_athena_insights(user_query):
             pattern_context += f"YOU MUST INCLUDE: and message like '%{actual_pattern}%'\n"
             pattern_context += f"This is a VERIFIED pattern from real support queries.\n"
             pattern_context += f"FAILURE TO INCLUDE THIS PATTERN WILL RESULT IN AN INCORRECT QUERY.\n"
+            logger.info(f"🚨 PATTERN DETECTED: '{actual_pattern}' - Will be enforced in prompt")
         else:
             logger.info("No cached pattern found, AI will infer from query")
 
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}{pattern_context}
+        analysis_prompt = f"""{pattern_context}
+
+**🚨 CRITICAL: IF YOU SEE "MANDATORY MESSAGE PATTERN DETECTED" ABOVE 🚨**
+**YOU MUST INCLUDE THAT EXACT "message like" LINE IN YOUR SQL QUERY**
+**DO NOT PROCEED WITHOUT INCLUDING IT - THIS IS THE #1 RULE**
+
+You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}
 
 AVAILABLE DATA:
 - Database: {database_name}
@@ -1602,34 +1609,21 @@ order by timestamp asc
 
 Generate a query specifically for: "{user_query}"
 
-**🚨 CRITICAL MANDATORY RULES - FAILURE TO FOLLOW = INCORRECT QUERY 🚨**
+**🚨🚨🚨 FINAL CHECK BEFORE YOU GENERATE THE QUERY 🚨🚨🚨**
 
-1. **IF "MANDATORY MESSAGE PATTERN" WAS DETECTED ABOVE:**
-   - YOU **MUST** INCLUDE THE EXACT LINE: and message like '%PatternName%'
-   - DO NOT generate a query without this line
-   - This is NON-NEGOTIABLE
+LOOK UP AT THE TOP OF THIS PROMPT - DID YOU SEE "MANDATORY MESSAGE PATTERN DETECTED"?
+- IF YES: Your query MUST include "and message like '%PatternName%'" - NO EXCEPTIONS
+- IF NO: Generate an appropriate query based on the question type
 
-2. **REQUIRED query elements:**
-   - ALWAYS include: account_uuid, campaign_uuid, file_date range
-   - For errors: MUST have log_level = 'ERROR'
-   - For counts: use count(distinct user_uuid) as affected_users
-   - For user journeys: MUST include user_uuid in WHERE clause
+**REQUIRED query elements:**
+- ALWAYS include: account_uuid, campaign_uuid, file_date range
+- For errors: MUST have log_level = 'ERROR'
+- For message patterns: MUST have message like '%Pattern%' (if pattern detected above)
 
-3. **Column selection - DO NOT use SELECT * unless it's a user journey:**
-   - Error analysis: timestamp, user_uuid, message, log_level, execution_key
-   - Volume/count: count(distinct user_uuid), file_date, log_level
-   - JSON data: json_extract_scalar(message, '$.field') AS field, timestamp
-
-4. **NEVER generate a generic query like:**
-   - ❌ SELECT timestamp, message FROM ... WHERE log_level = 'ERROR' LIMIT 10
-   - ❌ Any query without message LIKE when a pattern was detected
-   - ❌ Any query without file_date range
-
-5. **GOOD query examples:**
-   - ✅ Includes specific message LIKE '%ErrorType%'
-   - ✅ Has proper file_date >= and file_date < range
-   - ✅ Selects appropriate columns for the question type
-   - ✅ Orders by timestamp (ASC for journey, DESC for errors)
+**NEVER generate a generic query like:**
+- ❌ SELECT timestamp, message FROM ... WHERE log_level = 'ERROR' LIMIT 10
+- ❌ Any query without message LIKE when a pattern was detected at the top
+- ❌ Any query without file_date range
 
 Format your response as:
 DATABASE: {database_name}

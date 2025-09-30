@@ -2408,17 +2408,6 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
-        function formatMarkdownResponse(text) {
-            if (!text) return '';
-            var formatted = text;
-            formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1<' + '/strong>');
-            formatted = formatted.replace(/^## (.+)$/gm, '<h3 style="color: #2790FF; margin-top: 20px; margin-bottom: 10px;">$1<' + '/h3>');
-            formatted = formatted.replace(/^### (.+)$/gm, '<h4 style="color: #2790FF; margin-top: 15px; margin-bottom: 8px;">$1<' + '/h4>');
-            formatted = formatted.replace(/\n/g, '<br>');
-            formatted = formatted.replace(/^- (.+)$/gm, '&nbsp;&nbsp;• $1');
-            return formatted;
-        }
-
         document.getElementById('searchBtn').addEventListener('click', function() {
             const query = document.getElementById('queryInput').value.trim();
             if (!query) {
@@ -2442,8 +2431,8 @@ MAIN_TEMPLATE = '''
                     return;
                 }
 
-                // Show response with markdown formatting
-                document.getElementById('responseContent').innerHTML = formatMarkdownResponse(data.response);
+                // Show response
+                document.getElementById('responseContent').textContent = data.response;
                 const resultsContainer = document.getElementById('resultsContainer');
                 resultsContainer.style.display = 'block';
                 resultsContainer.classList.add('show');

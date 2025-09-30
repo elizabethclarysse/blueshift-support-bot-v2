@@ -1008,7 +1008,7 @@ def generate_related_resources_improved(query):
     resources_with_content = []
 
     # Prioritize help docs and API docs for content fetching - fetch more resources
-    priority_resources = help_docs[:4] + api_docs[:3] + confluence_docs[:3] + jira_tickets[:2] + zendesk_tickets[:2]
+    priority_resources = help_docs[:4] + api_docs[:3] + confluence_docs[:3] + jira_tickets[:2] + support_tickets[:2]
 
     # Use the improved content fetching function
     for doc in priority_resources:

@@ -600,9 +600,10 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             # Priority 1: Use _links.webui (most reliable for Confluence Cloud)
             if "_links" in r and "webui" in r["_links"]:
                 webui_path = r['_links']['webui']
-                # webui_path already includes /wiki, so we need the base domain
+                # webui_path is relative like /spaces/SPACE/pages/ID/Title
+                # We need to prepend the base URL + /wiki
                 base_url = CONFLUENCE_URL.split('/wiki')[0]
-                page_url = f"{base_url}{webui_path}"
+                page_url = f"{base_url}/wiki{webui_path}"
                 logger.info(f"Using _links.webui: {page_url}")
             # Priority 2: Use direct URL if provided
             elif "url" in r:

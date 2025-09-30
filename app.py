@@ -1002,6 +1002,49 @@ def get_available_tables(database_name):
         print(f"Error getting tables: {e}")
         return []
 
+# Cache for common message patterns - instant lookup, no database query needed
+MESSAGE_PATTERN_CACHE = {
+    # Keep the cache defined here to avoid relying on global scope updates after each run
+    'quiet': 'QuietHours',
+    'hours': 'QuietHours',
+    'facebook': 'FacebookAudienceSync',
+    'fb': 'FacebookAudienceSync',
+    'sync': 'FacebookAudienceSync',
+    'audience': 'FacebookAudienceSync',
+    'lookalike': 'FacebookAudienceSync',
+    'syndication': 'FacebookAudienceSync',
+    'external': 'ExternalFetchError',
+    'fetch': 'ExternalFetchError',
+    'channel': 'ChannelLimitError',
+    'limit': 'ChannelLimitError',
+    'dedup': 'DeduplicationError',
+    'dedupe': 'DeduplicationError',
+    'deduplication': 'DeduplicationError',
+    'duplicate': 'DeduplicationError',
+    'bounce': 'SoftBounce',
+    'bounced': 'SoftBounce',
+    'trigger': 'TriggerEvaluation',
+    'triggered': 'TriggerEvaluation',
+    'journey': 'UserJourney',
+    'evaluation': 'TriggerEvaluation',
+    'suppression': 'SuppressionCheck',
+    'suppressed': 'SuppressionCheck',
+    'optout': 'OptOutCheck',
+    'unsubscribe': 'UnsubscribeCheck',
+    'sms': 'SMSDelivery',
+    'email': 'EmailDelivery',
+    'push': 'PushNotification',
+    'mobile': 'PushNotification',
+    'webhook': 'WebhookExecution',
+    'timeout': 'TimeoutError',
+    'rate': 'RateLimitError',
+    'throttle': 'RateLimitError',
+    'api': 'APIError',
+    'permission': 'PermissionError',
+    'authentication': 'AuthenticationError',
+    'auth': 'AuthenticationError'
+}
+
 def sample_message_patterns(user_query, database_name, timeout_seconds=5):
     """Sample the database to find actual message patterns related to the user's query.
 
@@ -1016,79 +1059,15 @@ def sample_message_patterns(user_query, database_name, timeout_seconds=5):
             return None
 
         # Check cache first - instant lookup
-        search_term = words[0].lower()
-        if search_term in MESSAGE_PATTERN_CACHE:
-            cached_pattern = MESSAGE_PATTERN_CACHE[search_term]
-            logger.info(f"Using cached pattern for '{search_term}': {cached_pattern}")
-            return cached_pattern
-
-        # Check if any word matches cache
         for word in words:
             if word.lower() in MESSAGE_PATTERN_CACHE:
                 cached_pattern = MESSAGE_PATTERN_CACHE[word.lower()]
                 logger.info(f"Using cached pattern for '{word}': {cached_pattern}")
-                break
-
-        # If no pattern found, return None and rely on AI inference
-        if not actual_pattern:
-            return None
+                return cached_pattern
 
         logger.info(f"No cached pattern found, sampling database for: {words}")
 
-        # OPTIMIZED: Use recent partition and limit for speed
-        sample_query = f"""
-        select message
-        from {database_name}.campaign_execution_v3
-        where lower(message) like '%{search_term}%'
-        and file_date >= date_add('day', -7, current_date)
-        limit 3
-        """
-
-        # Add timeout wrapper using threading
-        import threading
-        result_container = [None]
-        error_container = [None]
-
-        def run_query():
-            try:
-                result_container[0] = query_athena(sample_query, database_name, f"Sample messages for {search_term}")
-            except Exception as e:
-                error_container[0] = e
-
-        query_thread = threading.Thread(target=run_query)
-        query_thread.daemon = True
-        query_thread.start()
-        query_thread.join(timeout=timeout_seconds)
-
-        if query_thread.is_alive():
-            logger.warning(f"Database sampling timed out after {timeout_seconds}s, using AI inference")
-            return None
-
-        if error_container[0]:
-            logger.error(f"Database sampling error: {error_container[0]}")
-            return None
-
-        result = result_container[0]
-
-        if result and result.get('data') and len(result['data']) > 0:
-            # Extract patterns from actual messages
-            messages = [row.get('message', '') for row in result['data']]
-            logger.info(f"Found {len(messages)} sample messages containing '{search_term}'")
-
-            # Return the most common distinct patterns (simplified - just return first match)
-            if messages:
-                # Look for key terms in the actual messages
-                for msg in messages:
-                    import re
-                    pattern = re.search(rf'\b\w*{search_term}\w*\b', msg, re.IGNORECASE)
-                    if pattern:
-                        actual_term = pattern.group(0)
-                        logger.info(f"Found actual message pattern: {actual_term}")
-                        # Cache the result for future queries
-                        MESSAGE_PATTERN_CACHE[search_term] = actual_term
-                        return actual_term
-
-        logger.info(f"No message patterns found for '{search_term}', AI will guess")
+        # If no pattern found, return None and rely on AI inference
         return None
 
     except Exception as e:

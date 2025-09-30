@@ -1060,6 +1060,56 @@ def get_available_tables(database_name):
         print(f"Error getting tables: {e}")
         return []
 
+def sample_message_patterns(user_query, database_name):
+    """Sample the database to find actual message patterns related to the user's query"""
+    try:
+        # Extract key terms from user query
+        STOP_WORDS = {'why', 'is', 'my', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'how', 'what', 'when', 'where', 'who'}
+        words = [w for w in user_query.lower().split() if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+        if not words:
+            return None
+
+        logger.info(f"Sampling database for patterns related to: {words}")
+
+        # Try to find messages containing key terms
+        search_term = words[0]  # Use first meaningful word
+
+        sample_query = f"""
+        select distinct message
+        from {database_name}.campaign_execution_v3
+        where lower(message) like '%{search_term.lower()}%'
+        and file_date >= '2024-12-01'
+        limit 10
+        """
+
+        result = query_athena(sample_query, database_name, f"Sample messages for {search_term}")
+
+        if result.get('data') and len(result['data']) > 0:
+            # Extract patterns from actual messages
+            messages = [row.get('message', '') for row in result['data']]
+            logger.info(f"Found {len(messages)} sample messages containing '{search_term}'")
+
+            # Return the most common distinct patterns (simplified - just return first match)
+            if messages:
+                # Look for key terms in the actual messages
+                for msg in messages:
+                    if search_term.lower() in msg.lower():
+                        # Find the actual casing used in the message
+                        import re
+                        pattern = re.search(rf'\b\w*{search_term}\w*\b', msg, re.IGNORECASE)
+                        if pattern:
+                            actual_term = pattern.group(0)
+                            logger.info(f"Found actual message pattern: {actual_term}")
+                            return actual_term
+
+        logger.info(f"No message patterns found for '{search_term}', AI will guess")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error sampling message patterns: {e}")
+        return None
+
 def generate_athena_insights(user_query):
     """Generate data insights using Athena queries based on user query with improved relevance"""
     try:
@@ -1082,9 +1132,31 @@ def generate_athena_insights(user_query):
         available_tables = get_available_tables(database_name)
         table_list = ', '.join(available_tables[:20]) if available_tables else "customer_campaign_logs.campaign_execution_v3"
 
+        # Extract UUIDs from user query if provided
+        import re
+        uuid_pattern = r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
+        found_uuids = re.findall(uuid_pattern, user_query)
+
+        uuid_context = ""
+        if found_uuids:
+            uuid_context = f"\n\nUUIDs FOUND IN USER QUERY:\n"
+            for uuid in found_uuids:
+                uuid_context += f"- {uuid}\n"
+            uuid_context += "Include these specific UUIDs in the query (use as user_uuid, campaign_uuid, or account_uuid based on context).\n"
+            logger.info(f"Found UUIDs in query: {found_uuids}")
+
+        # Sample the database to find actual message patterns
+        actual_pattern = sample_message_patterns(user_query, database_name)
+        pattern_context = ""
+        if actual_pattern:
+            pattern_context = f"\n\nACTUAL MESSAGE PATTERN FOUND IN DATABASE:\nWe found messages containing '{actual_pattern}' - use this exact term in your message like condition.\n"
+            logger.info(f"Using actual pattern from database: {actual_pattern}")
+        else:
+            logger.info("No pattern found in database, AI will infer from query")
+
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"
+        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}{pattern_context}
 
 AVAILABLE DATA:
 - Database: {database_name}
@@ -1142,34 +1214,31 @@ For questions about specific users, campaigns, or features, generate queries tha
 - Order by timestamp asc for chronological analysis
 
 CRITICAL FORMATTING REQUIREMENTS:
-Write the SQL query EXACTLY in this compact format - DO NOT break each column or condition into separate lines:
+Write the SQL query EXACTLY in this format with proper line breaks:
 
+Example 1 - Feature search (quiet hours):
 select timestamp, user_uuid, campaign_uuid, message
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
+and message like '%QuietHours%'
 and file_date >= '2024-12-01'
-and message like '%facebook%'
 order by timestamp desc
 limit 100
 
-NEVER format like this (BAD):
-select
-  timestamp,
-  user_uuid
-from
-  table
-where
-  condition
-  and (
-    other condition
-  )
-
-ALWAYS format like this (EXACT REQUIRED FORMAT):
+Example 2 - Integration search (facebook):
 select timestamp, user_uuid, campaign_uuid, message
 from customer_campaign_logs.campaign_execution_v3
-where account_uuid = '11d490bf-b250-4749-abf4-b6197620a985'
+where account_uuid = 'client_account_uuid'
 and message like '%facebook%'
-and message like '%syndication%'
+and file_date >= '2024-12-01'
+order by timestamp desc
+limit 100
+
+REQUIRED FORMAT:
+select timestamp, user_uuid, campaign_uuid, message
+from customer_campaign_logs.campaign_execution_v3
+where account_uuid = 'client_account_uuid'
+and message like '%QuietHours%'
 and file_date >= '2024-12-01'
 order by timestamp desc
 limit 100
@@ -1178,15 +1247,16 @@ CRITICAL FORMATTING RULES:
 - SELECT with columns stays together on one line
 - FROM on its own line
 - WHERE on its own line
-- Each AND message like condition on its own separate line (BEFORE file_date)
-- AND file_date condition on its own line (AFTER message conditions)
+- Use ONLY ONE message like condition (combine multiple keywords using OR inside one LIKE if needed, or pick the most important term)
+- AND file_date condition on its own line (AFTER message condition)
 - ORDER BY on its own line
 - LIMIT on its own line
-- This should be 7-8 lines total, not 1 line, not 3 lines
+- This should be 7 lines total
 
 QUERY RULES:
 - Use recent date: file_date >= '2024-12-01'
-- Include relevant message search terms for the user's question
+- Include ONLY ONE message like condition with the most relevant search term for the user's question
+- If multiple concepts need to be searched, pick the PRIMARY/most important one only
 - Use order by timestamp desc
 - Always end with limit 100
 

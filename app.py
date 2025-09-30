@@ -4,7 +4,7 @@ import os
 import boto3
 import json
 from datetime import datetime, timedelta
-import time
+import timea
 import base64
 import logging
 import re 
@@ -2354,12 +2354,14 @@ MAIN_TEMPLATE = '''
                 <div id="responseContent" class="response-content"></div>
             </div>
 
-            <div class="followup-section" id="followupSection">
-                <h4>Have a follow-up question?</h4>
-                <p class="subtitle">Click on a suggested question to continue exploring this topic:</p>
-                <div class="followup-suggestions" id="followupSuggestions">
-                    <!-- Follow-up suggestions will be dynamically inserted here -->
+            <div class="followup-section" id="followupSection" style="display: block;">
+                <h4>💬 Continue the conversation</h4>
+                <p class="subtitle">Ask a follow-up question about this topic:</p>
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <input type="text" id="followupInput" placeholder="Type your follow-up question..." style="flex: 1; padding: 12px 20px; border: 2px solid #2790FF; border-radius: 25px; font-size: 14px; outline: none; font-family: 'Calibri', sans-serif;">
+                    <button id="followupBtn" style="background: linear-gradient(45deg, #2790FF, #4da6ff); color: white; padding: 12px 25px; border: none; border-radius: 25px; font-size: 14px; cursor: pointer; font-family: 'Calibri', sans-serif; font-weight: 600;">Ask</button>
                 </div>
+                <div id="followupResponse" style="margin-top: 20px; padding: 20px; background: rgba(255, 255, 255, 0.9); border-radius: 10px; border-left: 3px solid #2790FF; display: none;"></div>
             </div>
 
             <div id="athenaSection" class="athena-section" style="display: none;">
@@ -2467,14 +2469,7 @@ MAIN_TEMPLATE = '''
                     showAthenaInsights(data.athena_insights);
                 }
 
-                // Show follow-up suggestions if available
-                console.log('Suggested followups:', data.suggested_followups);
-                if (data.suggested_followups && data.suggested_followups.length > 0) {
-                    console.log('Showing followup suggestions');
-                    showFollowupSuggestions(data.suggested_followups);
-                } else {
-                    console.log('No followup suggestions to show');
-                }
+                // Follow-up section is always visible now
 
                 // Reset button
                 document.getElementById('searchBtn').innerHTML = 'Get Support Analysis';
@@ -2487,32 +2482,55 @@ MAIN_TEMPLATE = '''
             });
         });
 
-        function showFollowupSuggestions(suggestions) {
-            const followupSection = document.getElementById('followupSection');
-            const followupSuggestions = document.getElementById('followupSuggestions');
+        // Follow-up button handler
+        document.getElementById('followupBtn').addEventListener('click', function() {
+            const followupQuery = document.getElementById('followupInput').value.trim();
+            if (!followupQuery) {
+                alert('Please enter a follow-up question');
+                return;
+            }
 
-            // Clear any existing suggestions
-            followupSuggestions.innerHTML = '';
+            document.getElementById('followupBtn').innerHTML = 'Processing...';
+            document.getElementById('followupBtn').disabled = true;
 
-            // Create clickable chips for each suggestion
-            suggestions.forEach(suggestion => {
-                const chip = document.createElement('button');
-                chip.className = 'followup-chip';
-                chip.textContent = suggestion;
-                chip.onclick = function() {
-                    // When clicked, trigger a new query with this suggestion
-                    document.getElementById('queryInput').value = suggestion;
-                    document.getElementById('searchBtn').click();
+            fetch('/followup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: followupQuery })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
 
-                    // Scroll to top to see the new results
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                };
-                followupSuggestions.appendChild(chip);
+                // Show response with markdown rendering
+                const followupResponseDiv = document.getElementById('followupResponse');
+                if (typeof marked !== 'undefined') {
+                    followupResponseDiv.innerHTML = marked.parse(data.response);
+                } else {
+                    followupResponseDiv.textContent = data.response;
+                }
+                followupResponseDiv.style.display = 'block';
+                document.getElementById('followupInput').value = '';
+
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('followupBtn').innerHTML = 'Ask';
+                document.getElementById('followupBtn').disabled = false;
             });
+        });
 
-            // Show the follow-up section
-            followupSection.style.display = 'block';
-        }
+        // Allow Enter key in follow-up input
+        document.getElementById('followupInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('followupBtn').click();
+            }
+        });
 
         function showResources(resources) {
             const sourcesGrid = document.getElementById('sourcesGrid');

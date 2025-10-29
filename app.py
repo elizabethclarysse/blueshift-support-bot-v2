@@ -226,7 +226,7 @@ FORMATTING RULES:
         }
 
         data = {
-            'model': 'claude-3-5-sonnet-20241022',
+            'model': 'claude-sonnet-4-5-20250929',
             'max_tokens': 4000,
             'temperature': temp,
             'system': system_instruction_content,
@@ -289,7 +289,7 @@ Can you show me an example implementation?"""
         }
 
         data = {
-            'model': 'claude-3-5-sonnet-20241022',
+            'model': 'claude-sonnet-4-5-20250929',
             'max_tokens': 300,
             'temperature': 0.7,
             'messages': [
@@ -1682,7 +1682,7 @@ INSIGHT_EXPLANATION:
             }
 
             data = {
-                'model': 'claude-3-5-sonnet-20241022',
+                'model': 'claude-sonnet-4-5-20250929',
                 'max_tokens': 4000,
                 'temperature': 0.0,  # Deterministic SQL generation
                 'messages': [
@@ -2091,7 +2091,7 @@ RULES:
 - This is an internal support tool - share all relevant information including database queries, API endpoints, and troubleshooting tips"""
 
         data_payload = {
-            'model': 'claude-3-5-sonnet-20241022',
+            'model': 'claude-sonnet-4-5-20250929',
             'max_tokens': 2000,
             'temperature': 0.3,
             'system': system_prompt,

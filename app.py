@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 import time
 import base64
 import logging
-import re 
+import re
+import sqlite3
+from collections import defaultdict 
 
 # Try to load .env file if it exists (for development/testing)
 try:
@@ -23,11 +25,6 @@ app.permanent_session_lifetime = timedelta(hours=12)
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
-# ---------------------------------
-
-# --- ANTHROPIC API CONFIGURATION (for Athena SQL generation) ---
-ANTHROPIC_API_KEY = os.environ.get('CLAUDE_API_KEY')
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -129,16 +126,119 @@ API_STATUS = validate_api_credentials_on_startup()
 # --- END FIX 2 ---
 
 
-# --- REPLACEMENT FOR call_anthropic_api, USING ANTHROPIC CLAUDE ---
-def call_gemini_api(query, platform_resources=None, temperature=0.2):
-    """Call Anthropic Claude API with system context and configuration.
+# --- AGENT ACTIVITY LOGGING DATABASE ---
+DB_PATH = 'agent_activity.db'
 
-    Switched from Gemini to Claude to avoid rate limit issues.
+def init_activity_db():
+    """Initialize the activity logging database"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS activity_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name TEXT NOT NULL,
+            query_text TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            response_status TEXT,
+            resources_found INTEGER DEFAULT 0,
+            athena_used BOOLEAN DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    logger.info("Activity logging database initialized")
+
+def log_agent_activity(agent_name, query_text, response_status='success', resources_found=0, athena_used=False):
+    """Log an agent's query activity"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO activity_logs (agent_name, query_text, response_status, resources_found, athena_used)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (agent_name, query_text, response_status, resources_found, athena_used))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error logging activity: {e}")
+
+def get_activity_stats(days=30):
+    """Get activity statistics for dashboard"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # Get date range
+        date_threshold = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Total queries by agent
+        cursor.execute('''
+            SELECT agent_name, COUNT(*) as query_count
+            FROM activity_logs
+            WHERE timestamp >= ?
+            GROUP BY agent_name
+            ORDER BY query_count DESC
+        ''', (date_threshold,))
+        queries_by_agent = cursor.fetchall()
+
+        # Recent activity (last 50)
+        cursor.execute('''
+            SELECT agent_name, query_text, timestamp, response_status
+            FROM activity_logs
+            ORDER BY timestamp DESC
+            LIMIT 50
+        ''')
+        recent_activity = cursor.fetchall()
+
+        # Daily activity trends
+        cursor.execute('''
+            SELECT DATE(timestamp) as date, COUNT(*) as count
+            FROM activity_logs
+            WHERE timestamp >= ?
+            GROUP BY DATE(timestamp)
+            ORDER BY date DESC
+        ''', (date_threshold,))
+        daily_trends = cursor.fetchall()
+
+        # Top search topics (simple keyword extraction)
+        cursor.execute('''
+            SELECT query_text
+            FROM activity_logs
+            WHERE timestamp >= ?
+        ''', (date_threshold,))
+        all_queries = cursor.fetchall()
+
+        conn.close()
+
+        return {
+            'queries_by_agent': queries_by_agent,
+            'recent_activity': recent_activity,
+            'daily_trends': daily_trends,
+            'all_queries': [q[0] for q in all_queries]
+        }
+    except Exception as e:
+        logger.error(f"Error getting activity stats: {e}")
+        return None
+
+# Initialize database on startup
+init_activity_db()
+# --- END AGENT ACTIVITY LOGGING ---
+
+
+# --- REPLACEMENT FOR call_anthropic_api, WITH AI RESPONSE FIX ---
+def call_gemini_api(query, platform_resources=None, temperature=0.2):
+    """Call Google Gemini API with system context and configuration.
+    
+    FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
     """
-    if not ANTHROPIC_API_KEY:
-        return "Error: CLAUDE_API_KEY is not configured."
+    if not AI_API_KEY:
+        return "Error: GEMINI_API_KEY is not configured."
 
     try:
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        
         # Build context from actual retrieved content
         platform_context = ""
 
@@ -158,14 +258,13 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
                     platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
         # System Instruction content
+        # FIX: Temperature set to 0.3 for the general query to reduce brittleness/conversational stops.
         if temperature > 0.0:
             temp = 0.3
         else:
             temp = temperature
 
         system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown with proper bold formatting for readability.
-
-IMPORTANT: This is an INTERNAL support tool used by Blueshift support team members. DO NOT include any "Support Contact" sections, "Contact support@blueshift.com" information, or instructions to reach out to Blueshift support. The users ARE the support team.
 
 INSTRUCTIONS:
 1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
@@ -204,8 +303,11 @@ When this feature isn't working as expected:
    - **Database queries:** customer_campaign_logs.campaign_execution_v3
    - **Error patterns:** ExternalFetchError, ChannelLimitError, DeduplicationError
    - **API endpoints** to test
-   - **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
-   - **API Base:** https://api.getblueshift.com
+
+## **Internal Notes**
+- **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
+- **API Base:** https://api.getblueshift.com
+- This is internal support guidance - provide actionable troubleshooting steps
 
 FORMATTING RULES:
 - Use **bold** for ALL section headers (even though they're already ## markdown headers)
@@ -216,36 +318,36 @@ FORMATTING RULES:
 - This makes the response much easier to scan and read
 """
 
-        # Ensure the prompt explicitly tells the model to start the structured response
+        # FIX: Ensure the prompt explicitly tells the model to start the structured response
         start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below. Do NOT use conversational filler like 'Of course, here is...'"
+        full_prompt = system_instruction_content + "\n\n" + start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
 
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
-        }
+        contents_array = [
+            {"role": "user", "parts": [{"text": full_prompt}]}
+        ]
 
         data = {
-            'model': 'claude-sonnet-4-5-20250929',
-            'max_tokens': 4000,
-            'temperature': temp,
-            'system': system_instruction_content,
-            'messages': [
-                {
-                    'role': 'user',
-                    'content': start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
-                }
-            ]
+            "contents": contents_array,
+            "generationConfig": { 
+                "temperature": temp, 
+                "maxOutputTokens": 4000  # CRITICAL FIX: Increased capacity
+            }
         }
+        
+        # Add API Key to the URL
+        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
 
-        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data, timeout=60)
+        # Timeout increased to 60 seconds 
+        response = requests.post(url_with_key, headers=headers, json=data, timeout=60) 
 
         if response.status_code == 200:
             response_json = response.json()
-            claude_response = response_json.get('content', [{}])[0].get('text', '').strip()
-            if not claude_response:
-                return f"API Error: Response blocked or empty."
-            return claude_response
+            # Safely extract the text from the response structure
+            gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+            if not gemini_response:
+                # Check for prompt filtering or safety block issues
+                return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
+            return gemini_response
         else:
             return f"API Error {response.status_code}: {response.text[:200]}"
 
@@ -256,7 +358,7 @@ FORMATTING RULES:
 
 def generate_followup_suggestions(original_query, ai_response):
     """Generate 3 relevant follow-up questions based on the query and response."""
-    if not ANTHROPIC_API_KEY:
+    if not AI_API_KEY:
         logger.warning("No AI API key - returning default follow-up suggestions")
         return get_default_followup_suggestions(original_query)
 
@@ -282,29 +384,22 @@ How do I configure this in the UI?
 What are common errors with this feature?
 Can you show me an example implementation?"""
 
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
-        }
-
+        headers = {'Content-Type': 'application/json'}
+        contents_array = [{"role": "user", "parts": [{"text": prompt}]}]
         data = {
-            'model': 'claude-sonnet-4-5-20250929',
-            'max_tokens': 300,
-            'temperature': 0.7,
-            'messages': [
-                {
-                    'role': 'user',
-                    'content': prompt
-                }
-            ]
+            "contents": contents_array,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 300
+            }
         }
 
-        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data, timeout=15)
+        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
+        response = requests.post(url_with_key, headers=headers, json=data, timeout=15)
 
         if response.status_code == 200:
             response_json = response.json()
-            text = response_json.get('content', [{}])[0].get('text', '').strip()
+            text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
 
             logger.info(f"Follow-up API response: {text[:200]}")
 
@@ -508,7 +603,7 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
             params = {
                 "cql": cql,
                 "limit": limit * 10,   # pull more for debugging
-                "expand": "_links.webui"
+                "expand": "content"
             }
             resp = requests.get(url, params=params, auth=(CONFLUENCE_EMAIL, CONFLUENCE_TOKEN), timeout=15)
             resp.raise_for_status()
@@ -527,26 +622,25 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
         # --- Build queries progressively ---
         cql_variants = []
 
-        # 1. Exact phrase - prioritize title matches
-        cql_variants.append(f'type = page AND title ~ "\\"{query}\\""')
+        # 1. Exact phrase (standard fields)
+        cql_variants.append(f'text ~ "\\"{query}\\"" OR title ~ "\\"{query}\\""')
 
-        # 2. Exact phrase in text
-        cql_variants.append(f'type = page AND text ~ "\\"{query}\\""')
-
-        # 3. All clean words in title (highest relevance)
-        if len(clean_query_words) > 1:
-            title_and_parts = [f'title ~ "{w}"' for w in clean_query_words]
-            cql_variants.append(f'type = page AND ({" AND ".join(title_and_parts)})')
-
-        # 4. All clean words anywhere (title OR text)
+        # 2. Clean words AND (standard fields)
         if len(clean_query_words) > 1:
             and_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
-            cql_variants.append(f'type = page AND ({" AND ".join(and_parts)})')
+            cql_variants.append(" AND ".join(and_parts))
 
-        # 5. Main word in title (using longest word as most significant)
+        # 3. Clean words OR (standard fields)
+        or_parts = [f'(title ~ "{w}" OR text ~ "{w}")' for w in clean_query_words]
+        or_parts.append(f'content ~ "{query}"')
+        cql_variants.append(" OR ".join(or_parts))
+
+
+        # 4. Single most important word (if we have multiple)
         if len(clean_query_words) > 1:
+            # Use longest word as most likely to be significant
             main_word = max(clean_query_words, key=len)
-            cql_variants.append(f'type = page AND title ~ "{main_word}"')
+            cql_variants.append(f'title ~ "{main_word}" OR text ~ "{main_word}"')
 
         # Add space filter if provided
         if space_key:
@@ -577,64 +671,39 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
              logger.info("No Confluence results found with any query variant")
              return []
 
-        # --- Re-rank: prioritize title matches heavily ---
+        # --- Re-rank: trust API score, tiny title nudge ---
         def score_fn(r):
             api_score = r.get("score", 0) or 0
             title = (r.get("title") or "").lower()
-            query_lower = query.lower()
 
-            score = api_score * 100
-
-            # Exact phrase in title = huge boost
-            if query_lower in title:
-                score += 1000
-
-            # Check if all clean words appear in title
+            # Check if any clean words appear in title
             title_word_matches = sum(1 for word in clean_query_words if word.lower() in title)
+            boost = title_word_matches * 5  # Small boost per matching word
 
-            # All words in title = major boost
-            if title_word_matches == len(clean_query_words):
-                score += 500
-            # At least 2 words in title for multi-word queries
-            elif len(clean_query_words) > 1 and title_word_matches >= 2:
-                score += title_word_matches * 100
-            # Single word match gets moderate boost
-            elif title_word_matches >= 1:
-                score += title_word_matches * 50
-
-            return score
+            return api_score * 100 + boost
 
         ranked = sorted(final_results, key=score_fn, reverse=True)
 
         # --- Format results ---
         formatted = []
         for r in ranked[:limit]:
+            # Try multiple ways to get the page ID due to different Confluence API response formats
+            page_id = r.get("content", {}).get("id") or r.get("id")
             title = r.get("title") or "Untitled"
 
-            # Debug: log the full result structure
-            logger.info(f"Processing Confluence result: keys={r.keys()}, _links={r.get('_links', 'MISSING')}")
-
-            # Priority 1: Use _links.webui (most reliable for Confluence Cloud)
-            if "_links" in r and "webui" in r["_links"]:
-                webui_path = r['_links']['webui']
-                # webui_path is relative like /spaces/SPACE/pages/ID/Title
-                # We need to prepend the base URL + /wiki
-                base_url = CONFLUENCE_URL.split('/wiki')[0]
-                page_url = f"{base_url}/wiki{webui_path}"
-                logger.info(f"Using _links.webui: {page_url}")
-            # Priority 2: Use direct URL if provided
-            elif "url" in r:
-                page_url = r["url"]
-                logger.info(f"Using direct URL: {page_url}")
-            # Priority 3: Construct from page ID
-            else:
-                page_id = r.get("content", {}).get("id") or r.get("id")
-                if not page_id:
-                    logger.warning(f"Confluence result missing page_id and _links: {r.keys()} - title: {title}")
+            # Debug log the structure of results that don't have page_id
+            if not page_id:
+                logger.warning(f"Confluence result missing page_id: {r.keys()} - title: {title}")
+                # Try to construct URL using other fields if available
+                if "url" in r:
+                    page_url = r["url"]
+                elif "_links" in r and "webui" in r["_links"]:
+                    page_url = f"{CONFLUENCE_URL.rstrip('/wiki')}{r['_links']['webui']}"
+                else:
                     continue  # Skip if we can't get a URL
-                # Use simple page ID format as last resort
-                page_url = f"{CONFLUENCE_URL}/pages/{page_id}"
-                logger.info(f"Using page_id fallback: {page_url}")
+            else:
+                # Use the most common and reliable URL format
+                page_url = f"{CONFLUENCE_URL}/pages/viewpage.action?pageId={page_id}"
 
             formatted.append({"title": title, "url": page_url})
 
@@ -854,7 +923,7 @@ def search_blueshift_api_docs(query, limit=3):
         return []
 
 # --- FIX 4: Robust fetch_help_doc_content with BeautifulSoup Fallback (Kept same) ---
-def fetch_help_doc_content_improved(url, max_content_length=8000):
+def fetch_help_doc_content_improved(url, max_content_length=2000):
     """Improved content fetching with fallback for missing BeautifulSoup"""
     try:
         logger.info(f"Fetching content from: {url}")
@@ -900,25 +969,24 @@ def fetch_help_doc_content_improved(url, max_content_length=8000):
         except ImportError:
             # Fallback: simple text extraction without BeautifulSoup
             logger.warning("BeautifulSoup not available - using simple text extraction")
-
+            
             # Basic HTML stripping (not perfect but functional)
             text = response.text
-
+            
             # Remove scripts and styles
             text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-
+            
             # Remove HTML tags
             text = re.sub(r'<[^>]+>', ' ', text)
-
+            
             # Clean up whitespace
             text = re.sub(r'\s+', ' ', text).strip()
-
-            # Use the max_content_length parameter value
+            
             if len(text) > max_content_length:
                 text = text[:max_content_length] + "...[truncated]"
-
-            logger.info(f"Fallback extraction: {len(text)} characters (max: {max_content_length})")
+            
+            logger.info(f"Fallback extraction: {len(text)} characters")
             return text
 
     except Exception as e:
@@ -1007,8 +1075,8 @@ def generate_related_resources_improved(query):
     # Fetch content from top results
     resources_with_content = []
 
-    # Prioritize help docs and API docs for content fetching - fetch more resources
-    priority_resources = help_docs[:4] + api_docs[:3] + confluence_docs[:3] + jira_tickets[:2] + support_tickets[:2]
+    # Prioritize help docs and API docs for content fetching
+    priority_resources = help_docs[:2] + api_docs[:2] + confluence_docs[:1] # Include 1 top confluence doc
 
     # Use the improved content fetching function
     for doc in priority_resources:
@@ -1177,11 +1245,9 @@ def get_available_tables(database_name):
 
 # Cache for common message patterns - instant lookup, no database query needed
 MESSAGE_PATTERN_CACHE = {
-    # Quiet hours & Dayparting
+    # Quiet hours
     'quiet': 'QuietHours',
     'hours': 'QuietHours',
-    'dayparting': 'OutsideDayparting',
-    'daypart': 'OutsideDayparting',
 
     # Facebook/Social
     'facebook': 'FacebookAudienceSync',
@@ -1191,7 +1257,7 @@ MESSAGE_PATTERN_CACHE = {
     'lookalike': 'FacebookAudienceSync',
     'syndication': 'FacebookAudienceSync',
 
-    # Common Errors
+    # Errors
     'external': 'ExternalFetchError',
     'fetch': 'ExternalFetchError',
     'channel': 'ChannelLimitError',
@@ -1200,39 +1266,14 @@ MESSAGE_PATTERN_CACHE = {
     'dedupe': 'DeduplicationError',
     'deduplication': 'DeduplicationError',
     'duplicate': 'DeduplicationError',
-    'bounce': 'soft_bounce',
-    'bounced': 'soft_bounce',
-    'soft': 'soft_bounce',
-
-    # Messaging & Remessaging Errors
-    'remessaging': 'RemessagingError',
-    'remessage': 'RemessagingError',
-    'timeout': 'RemessagingError',
-    'whitelist': 'UserNotWhitelistedError',
-    'whitelisted': 'UserNotWhitelistedError',
-
-    # Campaign Errors
-    'inactive': 'InactiveCampaignError',
-    'firefly': 'FireflyError',
-    'assertion': 'FireflyError',
-    'concurrency': 'JourneyConcurrencyError',
-    'concurrent': 'JourneyConcurrencyError',
-
-    # Recommendation Errors
-    'recommendation': 'NotEnoughRecommendationProductsError',
-    'recommendations': 'NotEnoughRecommendationProductsError',
-    'products': 'NotEnoughRecommendationProductsError',
-    'personalization': 'NotEnoughRecommendationProductsError',
+    'bounce': 'SoftBounce',
+    'bounced': 'SoftBounce',
 
     # Triggers & Journey
     'trigger': 'TriggerEvaluation',
     'triggered': 'TriggerEvaluation',
     'journey': 'UserJourney',
     'evaluation': 'TriggerEvaluation',
-    'skipping': 'skipping',
-    'dispatched': 'dispatched',
-    'deferred': 'deferred',
-    'holdout': 'holdout',
 
     # Suppression & Opt-out
     'suppression': 'SuppressionCheck',
@@ -1240,14 +1281,12 @@ MESSAGE_PATTERN_CACHE = {
     'optout': 'OptOutCheck',
     'unsubscribe': 'UnsubscribeCheck',
 
-    # Channels & Sending
-    'sms': 'sending SMS',
-    'email': 'sending email',
+    # Channels
+    'sms': 'SMSDelivery',
+    'email': 'EmailDelivery',
     'push': 'PushNotification',
     'mobile': 'PushNotification',
     'webhook': 'WebhookExecution',
-    'sending': 'sending',
-    'send': 'send',
 
     # Other common issues
     'timeout': 'TimeoutError',
@@ -1402,23 +1441,13 @@ def generate_athena_insights(user_query):
 
         pattern_context = ""
         if actual_pattern:
-            pattern_context = f"\n\n🚨 MANDATORY MESSAGE PATTERN DETECTED 🚨\n"
-            pattern_context += f"YOU MUST INCLUDE: and message like '%{actual_pattern}%'\n"
-            pattern_context += f"This is a VERIFIED pattern from real support queries.\n"
-            pattern_context += f"FAILURE TO INCLUDE THIS PATTERN WILL RESULT IN AN INCORRECT QUERY.\n"
-            logger.info(f"🚨 PATTERN DETECTED: '{actual_pattern}' - Will be enforced in prompt")
+            pattern_context = f"\n\nKNOWN MESSAGE PATTERN:\nUse '{actual_pattern}' in your message like condition (verified pattern from common support queries).\n"
         else:
             logger.info("No cached pattern found, AI will infer from query")
 
         # --- Use the new call_gemini_api for analysis ---
         # FIX: Explicitly enforce the full table name in the template examples.
-        analysis_prompt = f"""{pattern_context}
-
-**🚨 CRITICAL: IF YOU SEE "MANDATORY MESSAGE PATTERN DETECTED" ABOVE 🚨**
-**YOU MUST INCLUDE THAT EXACT "message like" LINE IN YOUR SQL QUERY**
-**DO NOT PROCEED WITHOUT INCLUDING IT - THIS IS THE #1 RULE**
-
-You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}
+        analysis_prompt = f"""You are a Blueshift data analyst. Generate a relevant Athena SQL query for this support question: "{user_query}"{uuid_context}{pattern_context}
 
 AVAILABLE DATA:
 - Database: {database_name}
@@ -1463,7 +1492,7 @@ select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
-and message like '%QuietHours%'
+and message like '%{feature_pattern}%'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 order by timestamp asc
@@ -1480,7 +1509,7 @@ select
 from customer_campaign_logs.campaign_execution_v3
 where account_uuid = 'client_account_uuid'
 and campaign_uuid = 'client_campaign_uuid'
-and message like '%ChannelLimitError%'
+and message like '%{error_pattern}%'
 and file_date >= '2024-12-01'
 and file_date < '2024-12-15'
 group by file_date, log_level
@@ -1583,82 +1612,7 @@ order by timestamp desc
 limit 200
 ```
 
-For "Why is external fetch failing?":
-```sql
-select timestamp, user_uuid, campaign_uuid, trigger_uuid, message, log_level
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and log_level = 'ERROR'
-and message like '%ExternalFetchError%'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-order by timestamp desc
-limit 200
-```
-
-For "Soft bounce analysis":
-```sql
-SELECT
-    json_extract_scalar(message, '$.action') AS action,
-    json_extract_scalar(message, '$.email') AS email,
-    json_extract_scalar(message, '$.reason') AS reason,
-    json_extract_scalar(message, '$.status') AS status,
-    timestamp
-FROM customer_campaign_logs.campaign_execution_v3
-WHERE account_uuid = 'client_account_uuid'
-AND campaign_uuid = 'client_campaign_uuid'
-AND file_date >= '2024-12-01'
-AND file_date < '2024-12-15'
-AND message LIKE '%soft_bounce%'
-ORDER BY timestamp DESC
-LIMIT 200
-```
-
-For "Count affected users with specific error":
-```sql
-select count(distinct user_uuid) as affected_users
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-and message like '%ChannelLimitError%'
-```
-
-For "Errors excluding certain types":
-```sql
-select timestamp, user_uuid, message
-from customer_campaign_logs.campaign_execution_v3
-where account_uuid = 'client_account_uuid'
-and campaign_uuid = 'client_campaign_uuid'
-and file_date >= '2024-12-01'
-and file_date < '2024-12-15'
-and log_level = 'ERROR'
-and message not like '%RemessagingError%'
-and message not like '%UserNotWhitelistedError%'
-order by timestamp asc
-```
-
 Generate a query specifically for: "{user_query}"
-
-**🚨🚨🚨 FINAL CHECK BEFORE YOU GENERATE THE QUERY 🚨🚨🚨**
-
-LOOK UP AT THE TOP OF THIS PROMPT - DID YOU SEE "MANDATORY MESSAGE PATTERN DETECTED"?
-- IF YES: Your query MUST include "and message like '%PatternName%'" - NO EXCEPTIONS
-- IF NO: Generate an appropriate query based on the question type
-
-**REQUIRED query elements:**
-- ALWAYS include: account_uuid, campaign_uuid, file_date range
-- For errors: MUST have log_level = 'ERROR'
-- For message patterns: MUST have message like '%Pattern%' (if pattern detected above)
-- **IMPORTANT: Use file_date range ONLY ONCE** - file_date >= '2024-12-01' and file_date < '2024-12-15' (do NOT duplicate these lines)
-
-**NEVER generate a generic query like:**
-- ❌ SELECT timestamp, message FROM ... WHERE log_level = 'ERROR' LIMIT 10
-- ❌ Any query without message LIKE when a pattern was detected at the top
-- ❌ Any query without file_date range
-- ❌ Any query with duplicate file_date conditions
 
 Format your response as:
 DATABASE: {database_name}
@@ -1669,49 +1623,9 @@ SQL_QUERY:
 INSIGHT_EXPLANATION:
 [Brief explanation of what this query searches for and why it helps with the user's question]"""
 
-        # Call Anthropic Claude API for SQL generation (more reliable than Gemini for structured output)
-        try:
-            if not ANTHROPIC_API_KEY:
-                logger.error("ANTHROPIC_API_KEY not set, falling back to default query")
-                return get_default_athena_insights(user_query)
-
-            headers = {
-                'Content-Type': 'application/json',
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01'
-            }
-
-            data = {
-                'model': 'claude-sonnet-4-5-20250929',
-                'max_tokens': 4000,
-                'temperature': 0.0,  # Deterministic SQL generation
-                'messages': [
-                    {
-                        'role': 'user',
-                        'content': analysis_prompt
-                    }
-                ]
-            }
-
-            response = requests.post(
-                ANTHROPIC_API_URL,
-                headers=headers,
-                json=data,
-                timeout=30
-            )
-
-            if response.status_code != 200:
-                logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
-                return get_default_athena_insights(user_query)
-
-            result = response.json()
-            ai_response = result['content'][0]['text']
-            logger.info(f"Athena SQL generated successfully with Claude: {ai_response[:200]}...")
-
-        except Exception as e:
-            logger.error(f"Anthropic API call failed: {e}")
-            return get_default_athena_insights(user_query)
-        # --- End Anthropic API call ---
+        # Call the unified Gemini API function (temperature 0.0 for deterministic SQL generation)
+        ai_response = call_gemini_api(query=analysis_prompt, platform_resources=None, temperature=0.0)
+        # --- End Gemini API call ---
 
         if ai_response.startswith("Error:"):
             logger.error(f"Athena AI API error: {ai_response}")
@@ -1723,50 +1637,6 @@ INSIGHT_EXPLANATION:
     except Exception as e:
         logger.error(f"Athena insights generation error: {e}")
         return get_default_athena_insights(user_query)
-
-def format_sql_query(sql_query):
-    """Format SQL query to put SELECT columns on a single line"""
-    lines = sql_query.split('\n')
-    formatted_lines = []
-    in_select = False
-    select_columns = []
-
-    for line in lines:
-        line_stripped = line.strip()
-        line_lower = line_stripped.lower()
-
-        # Check if we're starting a SELECT statement
-        if line_lower.startswith('select'):
-            in_select = True
-            # If SELECT has columns on same line, handle it
-            if len(line_stripped) > 6:  # "select" is 6 chars
-                rest = line_stripped[6:].strip()
-                if rest and not rest.lower().startswith('from'):
-                    select_columns.append(rest.rstrip(','))
-            continue
-
-        # Check if we've reached FROM (end of column list)
-        if in_select and line_lower.startswith('from'):
-            # Join all select columns on one line
-            if select_columns:
-                formatted_lines.append('select ' + ', '.join(select_columns))
-            else:
-                formatted_lines.append('select *')
-            formatted_lines.append(line_stripped)
-            in_select = False
-            select_columns = []
-            continue
-
-        # If we're in SELECT section, collect columns
-        if in_select:
-            col = line_stripped.rstrip(',')
-            if col:
-                select_columns.append(col)
-        else:
-            # Not in SELECT, just add the line
-            formatted_lines.append(line_stripped)
-
-    return '\n'.join(formatted_lines)
 
 def parse_athena_analysis(ai_response, user_query):
     """Parse AI response and execute Athena query"""
@@ -1812,31 +1682,6 @@ def parse_athena_analysis(ai_response, user_query):
 
         # Validate and refine the query before returning
         if sql_query.strip():
-            # Remove duplicate file_date conditions and remove file_date < conditions (only keep file_date >=)
-            sql_lines = sql_query.strip().split('\n')
-            seen_file_date_gte = False
-            cleaned_lines = []
-
-            for line in sql_lines:
-                line_lower = line.lower().strip()
-                # Skip duplicate file_date >= lines (keep only first)
-                if 'file_date >=' in line_lower:
-                    if not seen_file_date_gte:
-                        cleaned_lines.append(line)
-                        seen_file_date_gte = True
-                    else:
-                        logger.info(f"Removed duplicate file_date >= line: {line.strip()}")
-                # Remove ALL file_date < lines
-                elif 'file_date <' in line_lower:
-                    logger.info(f"Removed file_date < line: {line.strip()}")
-                else:
-                    cleaned_lines.append(line)
-
-            sql_query = '\n'.join(cleaned_lines)
-
-            # Format SELECT columns on a single line
-            sql_query = format_sql_query(sql_query)
-
             # Ensure we use placeholder values instead of real data
             safe_sql_query = customize_query_for_execution(sql_query.strip(), user_query)
 
@@ -1929,7 +1774,7 @@ def validate_and_test_query(sql_query, database_name, user_query, explanation):
             return {
                 'database': database_name,
                 'sql_query': sql_query,
-                'explanation': explanation,
+                'explanation': explanation + f"\n\n⚠️ **Validation Note**: Initial test of this query encountered an issue ({error_msg}). You may need to adjust the query parameters for your specific use case.",
                 'results': {"note": "Query validation failed - may need adjustments", "data": []},
                 'has_data': False
             }
@@ -1966,6 +1811,7 @@ def login():
         # Check credentials
         if username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
             session['logged_in'] = True
+            session['agent_name'] = username
             session.permanent = True
             return jsonify({'success': True})
         else:
@@ -2045,6 +1891,17 @@ def handle_query():
         # Generate suggested follow-up questions
         suggested_followups = generate_followup_suggestions(query, ai_response)
 
+        # Log agent activity
+        agent_name = session.get('agent_name', 'Unknown Agent')
+        athena_used = athena_insights.get('has_data', False) if athena_insights else False
+        log_agent_activity(
+            agent_name=agent_name,
+            query_text=query,
+            response_status='success',
+            resources_found=len(platform_resources_with_content),
+            athena_used=athena_used
+        )
+
         return jsonify({
             "response": ai_response,
             "resources": related_resources,
@@ -2053,6 +1910,13 @@ def handle_query():
         })
 
     except Exception as e:
+        # Log failed query
+        agent_name = session.get('agent_name', 'Unknown Agent')
+        log_agent_activity(
+            agent_name=agent_name,
+            query_text=data.get('query', 'Unknown'),
+            response_status='error'
+        )
         print(f"Error in handle_query: {e}")
         return jsonify({"error": "An error occurred processing your request"})
 
@@ -2070,51 +1934,47 @@ def handle_followup():
         if not followup_query:
             return jsonify({"error": "Please provide a follow-up question"})
 
-        # Call Claude API with simpler prompt for follow-up questions
-        if not ANTHROPIC_API_KEY:
-            return jsonify({"error": "API key not configured"})
+        # Call Gemini API
+        ai_response = call_gemini_api(followup_query)
 
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
-        }
-
-        # Simpler system prompt for follow-up - direct answers, not step-by-step
-        system_prompt = """You are Blueshift support. Answer follow-up questions directly and concisely.
-
-RULES:
-- Provide direct answers, not step-by-step guides
-- Use **bold** for key terms, error names, feature names, UI elements
-- Keep responses focused and to-the-point
-- Include technical details, error patterns, and specific examples
-- This is an internal support tool - share all relevant information including database queries, API endpoints, and troubleshooting tips"""
-
-        data_payload = {
-            'model': 'claude-sonnet-4-5-20250929',
-            'max_tokens': 2000,
-            'temperature': 0.3,
-            'system': system_prompt,
-            'messages': [
-                {
-                    'role': 'user',
-                    'content': followup_query
-                }
-            ]
-        }
-
-        response = requests.post(ANTHROPIC_API_URL, headers=headers, json=data_payload, timeout=30)
-
-        if response.status_code == 200:
-            response_json = response.json()
-            ai_response = response_json.get('content', [{}])[0].get('text', '').strip()
-            return jsonify({"response": ai_response})
-        else:
-            return jsonify({"error": f"API Error: {response.status_code}"})
+        return jsonify({
+            "response": ai_response
+        })
 
     except Exception as e:
         print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
+
+
+@app.route('/dashboard')
+def dashboard():
+    """Agent activity dashboard"""
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    # Get activity statistics
+    stats = get_activity_stats(days=30)
+
+    if not stats:
+        return "Error loading dashboard data", 500
+
+    # Extract top keywords from queries
+    keyword_counts = defaultdict(int)
+    common_words = {'how', 'to', 'what', 'is', 'the', 'a', 'an', 'in', 'on', 'for', 'with', 'and', 'or', 'can', 'i', 'do', 'does'}
+
+    for query in stats['all_queries']:
+        words = re.findall(r'\b\w+\b', query.lower())
+        for word in words:
+            if len(word) > 3 and word not in common_words:
+                keyword_counts[word] += 1
+
+    top_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return render_template_string(DASHBOARD_TEMPLATE,
+                                   stats=stats,
+                                   top_keywords=top_keywords,
+                                   agent_name=session.get('agent_name', 'Unknown'))
 
 
 # Exact copy of production HTML with correct styling
@@ -2266,7 +2126,7 @@ MAIN_TEMPLATE = '''
     <style>
         body {
             font-family: 'Calibri', sans-serif;
-            font-size: 9pt;
+            font-size: 10pt;
             margin: 0;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
@@ -2480,7 +2340,18 @@ MAIN_TEMPLATE = '''
             font-size: 1.1em;
         }
 
-        /* Follow-up input styling is inline in HTML */
+        /* Deprecated old input style */
+        .followup-container {
+            display: none;
+        }
+
+        #followupInput {
+            display: none;
+        }
+
+        #followupBtn {
+            display: none;
+        }
 
         .followup-response {
             margin-top: 20px;
@@ -2622,6 +2493,9 @@ MAIN_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
+        <div style="text-align: right; margin-bottom: 10px;">
+            <a href="/dashboard" style="display: inline-block; padding: 10px 20px; background: linear-gradient(45deg, #764ba2, #667eea); color: white; text-decoration: none; border-radius: 20px; font-weight: 600; font-size: 14px; transition: all 0.3s;">📊 View Dashboard</a>
+        </div>
         <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 40px; vertical-align: middle; margin-right: 10px;">Blueshift Support Bot</h1>
 
         <div class="search-container">
@@ -2905,3 +2779,357 @@ if __name__ == '__main__':
     print("--- ATTEMPTING TO START FLASK APP ---")
 
     app.run(host='0.0.0.0', port=port, debug=True)
+
+
+DASHBOARD_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Activity Dashboard</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/blueshift-favicon.png">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .agent-badge {
+            background: #667eea;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .back-btn {
+            background: #764ba2;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .back-btn:hover {
+            background: #5a3980;
+            transform: translateY(-2px);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-card h3 {
+            color: #667eea;
+            font-size: 18px;
+            margin-bottom: 15px;
+        }
+
+        .stat-number {
+            font-size: 36px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .agent-list {
+            list-style: none;
+        }
+
+        .agent-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .agent-item:last-child {
+            border-bottom: none;
+        }
+
+        .agent-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .query-count {
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .activity-section {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+
+        .activity-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .activity-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .activity-table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .activity-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .activity-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .keyword-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .keyword-tag {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .keyword-count {
+            background: rgba(255, 255, 255, 0.3);
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 6px;
+        }
+
+        .chart-container {
+            margin-top: 20px;
+        }
+
+        .trend-bar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .trend-date {
+            width: 120px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .trend-bar-fill {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            height: 30px;
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            color: white;
+            font-weight: 600;
+            min-width: 40px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="header">
+            <h1>📊 Agent Activity Dashboard</h1>
+            <div class="header-info">
+                <span class="agent-badge">👤 {{ agent_name }}</span>
+                <a href="/" class="back-btn">← Back to Support Bot</a>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Queries (Last 30 Days)</h3>
+                <div class="stat-number">{{ stats.recent_activity|length }}</div>
+                <div class="stat-label">across all agents</div>
+            </div>
+
+            <div class="stat-card">
+                <h3>Active Agents</h3>
+                <div class="stat-number">{{ stats.queries_by_agent|length }}</div>
+                <div class="stat-label">agents have used the bot</div>
+            </div>
+
+            <div class="stat-card">
+                <h3>Queries by Agent</h3>
+                {% if stats.queries_by_agent %}
+                <ul class="agent-list">
+                    {% for agent, count in stats.queries_by_agent[:5] %}
+                    <li class="agent-item">
+                        <span class="agent-name">{{ agent }}</span>
+                        <span class="query-count">{{ count }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="empty-state">No activity yet</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="activity-section">
+            <h2>Top Search Topics</h2>
+            {% if top_keywords %}
+            <div class="keyword-list">
+                {% for keyword, count in top_keywords %}
+                <div class="keyword-tag">
+                    {{ keyword }}
+                    <span class="keyword-count">{{ count }}</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">No search data available</div>
+            {% endif %}
+        </div>
+
+        <div class="activity-section">
+            <h2>Daily Activity Trend</h2>
+            {% if stats.daily_trends %}
+            <div class="chart-container">
+                {% for date, count in stats.daily_trends[:14] %}
+                <div class="trend-bar">
+                    <span class="trend-date">{{ date }}</span>
+                    <div class="trend-bar-fill" style="width: {{ (count * 10) + 40 }}px;">
+                        {{ count }}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">No trend data available</div>
+            {% endif %}
+        </div>
+
+        <div class="activity-section">
+            <h2>Recent Activity</h2>
+            {% if stats.recent_activity %}
+            <table class="activity-table">
+                <thead>
+                    <tr>
+                        <th>Agent</th>
+                        <th>Query</th>
+                        <th>Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for agent, query, timestamp, status in stats.recent_activity[:20] %}
+                    <tr>
+                        <td><strong>{{ agent }}</strong></td>
+                        <td>{{ query[:100] }}{% if query|length > 100 %}...{% endif %}</td>
+                        <td>{{ timestamp }}</td>
+                        <td>
+                            <span class="status-badge {% if status == 'success' %}status-success{% else %}status-error{% endif %}">
+                                {{ status }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">No recent activity</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+'''

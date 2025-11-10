@@ -208,13 +208,36 @@ def get_activity_stats(days=30):
         ''', (date_threshold,))
         all_queries = cursor.fetchall()
 
+        # Monthly trends by agent (last 6 months)
+        six_months_ago = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            SELECT
+                strftime('%Y-%m', timestamp) as month,
+                agent_name,
+                COUNT(*) as count
+            FROM activity_logs
+            WHERE timestamp >= ?
+            GROUP BY month, agent_name
+            ORDER BY month DESC, count DESC
+        ''', (six_months_ago,))
+        monthly_by_agent = cursor.fetchall()
+
+        # Process monthly data for visualization
+        monthly_data = {}
+        for month, agent, count in monthly_by_agent:
+            if month not in monthly_data:
+                monthly_data[month] = {}
+            monthly_data[month][agent] = count
+
         conn.close()
 
         return {
             'queries_by_agent': queries_by_agent,
             'recent_activity': recent_activity,
             'daily_trends': daily_trends,
-            'all_queries': [q[0] for q in all_queries]
+            'all_queries': [q[0] for q in all_queries],
+            'monthly_by_agent': monthly_by_agent,
+            'monthly_data': monthly_data
         }
     except Exception as e:
         logger.error(f"Error getting activity stats: {e}")
@@ -1811,13 +1834,30 @@ def login():
         # Check credentials
         if username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
             session['logged_in'] = True
-            session['agent_name'] = username
+            session['agent_identified'] = False  # Flag to show identification prompt
             session.permanent = True
             return jsonify({'success': True})
         else:
             return jsonify({'success': False, 'error': 'Invalid username or password'})
 
     return render_template_string(LOGIN_TEMPLATE)
+
+@app.route('/identify-agent', methods=['POST'])
+def identify_agent():
+    """Store individual agent name after shared login"""
+    if not session.get('logged_in'):
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+
+    data = request.get_json()
+    agent_name = data.get('agent_name', '').strip()
+
+    if not agent_name:
+        return jsonify({'success': False, 'error': 'Please enter your name'})
+
+    session['agent_name'] = agent_name
+    session['agent_identified'] = True
+
+    return jsonify({'success': True})
 
 @app.route('/')
 def index():
@@ -2489,11 +2529,106 @@ MAIN_TEMPLATE = '''
             display: inline-block;
             margin-left: 10px;
         }
+
+        /* Agent Identification Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+        }
+
+        .modal-content h2 {
+            color: #2790FF;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .modal-content p {
+            color: #666;
+            margin-bottom: 25px;
+            line-height: 1.6;
+        }
+
+        .modal-content input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e1e5e9;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 20px;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        .modal-content input:focus {
+            border-color: #2790FF;
+            outline: none;
+        }
+
+        .modal-content button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(45deg, #2790FF, #4da6ff);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: 'Calibri', sans-serif;
+        }
+
+        .modal-content button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(39, 144, 255, 0.3);
+        }
+
+        .agent-badge-top {
+            display: inline-block;
+            background: linear-gradient(45deg, #2790FF, #4da6ff);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 14px;
+            margin-left: 10px;
+        }
     </style>
 </head>
 <body>
+    <!-- Agent Identification Modal -->
+    <div id="agentModal" class="modal-overlay">
+        <div class="modal-content">
+            <h2>👋 Welcome!</h2>
+            <p>To help us track support activity, please enter your name:</p>
+            <input type="text" id="agentNameInput" placeholder="Your name (e.g., Sarah, John)" autocomplete="off">
+            <button id="submitAgentName">Continue</button>
+        </div>
+    </div>
+
     <div class="container">
-        <div style="text-align: right; margin-bottom: 10px;">
+        <div style="text-align: right; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <span id="agentBadge" class="agent-badge-top" style="display: none;">👤 <span id="agentNameDisplay"></span></span>
             <a href="/dashboard" style="display: inline-block; padding: 10px 20px; background: linear-gradient(45deg, #764ba2, #667eea); color: white; text-decoration: none; border-radius: 20px; font-weight: 600; font-size: 14px; transition: all 0.3s;">📊 View Dashboard</a>
         </div>
         <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 40px; vertical-align: middle; margin-right: 10px;">Blueshift Support Bot</h1>
@@ -2582,6 +2717,56 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
+        // Check if agent needs to identify themselves
+        const agentIdentified = sessionStorage.getItem('agentIdentified');
+        const agentName = sessionStorage.getItem('agentName');
+
+        if (!agentIdentified) {
+            document.getElementById('agentModal').classList.add('show');
+        } else if (agentName) {
+            // Show agent badge if already identified
+            document.getElementById('agentNameDisplay').textContent = agentName;
+            document.getElementById('agentBadge').style.display = 'inline-block';
+        }
+
+        // Handle agent identification
+        document.getElementById('submitAgentName').addEventListener('click', function() {
+            const agentName = document.getElementById('agentNameInput').value.trim();
+            if (!agentName) {
+                alert('Please enter your name');
+                return;
+            }
+
+            fetch('/identify-agent', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ agent_name: agentName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    sessionStorage.setItem('agentIdentified', 'true');
+                    sessionStorage.setItem('agentName', agentName);
+                    document.getElementById('agentModal').classList.remove('show');
+                    // Show agent badge
+                    document.getElementById('agentNameDisplay').textContent = agentName;
+                    document.getElementById('agentBadge').style.display = 'inline-block';
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to identify agent'));
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        });
+
+        // Allow Enter key to submit
+        document.getElementById('agentNameInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('submitAgentName').click();
+            }
+        });
+
         document.getElementById('searchBtn').addEventListener('click', function() {
             const query = document.getElementById('queryInput').value.trim();
             if (!query) {
@@ -3022,11 +3207,12 @@ DASHBOARD_TEMPLATE = '''
                 <ul class="agent-list">
                     {% for agent, count in stats.queries_by_agent[:5] %}
                     <li class="agent-item">
-                        <span class="agent-name">{{ agent }}</span>
+                        <span class="agent-name">{{ agent if agent != 'Unknown Agent' else agent + ' ⚠️' }}</span>
                         <span class="query-count">{{ count }}</span>
                     </li>
                     {% endfor %}
                 </ul>
+                <p style="font-size: 11px; color: #999; margin-top: 10px;">⚠️ Unknown Agent = queries before tracking was enabled</p>
                 {% else %}
                 <div class="empty-state">No activity yet</div>
                 {% endif %}
@@ -3050,7 +3236,30 @@ DASHBOARD_TEMPLATE = '''
         </div>
 
         <div class="activity-section">
-            <h2>Daily Activity Trend</h2>
+            <h2>Monthly Trend by Agent (Last 6 Months)</h2>
+            {% if stats.monthly_data %}
+            <div class="chart-container">
+                {% for month in stats.monthly_data|dictsort(reverse=true) %}
+                <div style="margin-bottom: 25px;">
+                    <h4 style="color: #667eea; margin-bottom: 10px;">{{ month[0] }}</h4>
+                    {% for agent, count in month[1].items() %}
+                    <div class="trend-bar" style="margin-bottom: 8px;">
+                        <span class="trend-date" style="width: 180px;">{{ agent }}</span>
+                        <div class="trend-bar-fill" style="width: {{ (count * 15) + 50 }}px; background: linear-gradient(90deg, #2790FF 0%, #4da6ff 100%);">
+                            {{ count }}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">No monthly data available</div>
+            {% endif %}
+        </div>
+
+        <div class="activity-section">
+            <h2>Daily Activity Trend (Last 14 Days)</h2>
             {% if stats.daily_trends %}
             <div class="chart-container">
                 {% for date, count in stats.daily_trends[:14] %}

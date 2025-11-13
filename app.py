@@ -26,7 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+# Primary model: gemini-2.5-pro (best quality), with fallback to gemini-1.5-pro for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -129,7 +131,10 @@ API_STATUS = validate_api_credentials_on_startup()
 
 
 # --- AGENT ACTIVITY LOGGING DATABASE ---
-DB_PATH = 'agent_activity.db'
+# Use /data directory if it exists (Railway persistent volume), otherwise use current directory
+DATA_DIR = '/data' if os.path.exists('/data') else '.'
+DB_PATH = os.path.join(DATA_DIR, 'agent_activity.db')
+logger.info(f"Database path: {DB_PATH}")
 
 def init_activity_db():
     """Initialize the activity logging database"""
@@ -390,22 +395,68 @@ FORMATTING RULES:
             }
         }
         
-        # Add API Key to the URL
-        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
+        # Try primary model (2.5 Pro) first, then fallback to 1.5 Pro
+        models_to_try = [
+            ("Gemini 2.5 Pro", GEMINI_API_URL_PRIMARY),
+            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
+        ]
 
-        # Timeout increased to 60 seconds 
-        response = requests.post(url_with_key, headers=headers, json=data, timeout=60) 
+        for model_name, model_url in models_to_try:
+            url_with_key = f"{model_url}?key={AI_API_KEY}"
 
-        if response.status_code == 200:
-            response_json = response.json()
-            # Safely extract the text from the response structure
-            gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-            if not gemini_response:
-                # Check for prompt filtering or safety block issues
-                return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
-            return gemini_response
-        else:
-            return f"API Error {response.status_code}: {response.text[:200]}"
+            # Retry logic for 503 errors (model overloaded)
+            max_retries = 2 if model_name == "Gemini 2.5 Pro" else 1  # Only retry 2.5 Pro
+            retry_delay = 1  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    # Timeout increased to 60 seconds
+                    response = requests.post(url_with_key, headers=headers, json=data, timeout=60)
+
+                    if response.status_code == 200:
+                        response_json = response.json()
+                        # Safely extract the text from the response structure
+                        gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+                        if not gemini_response:
+                            # Check for prompt filtering or safety block issues
+                            return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
+
+                        # Log which model was used
+                        if model_name == "Gemini 1.5 Pro":
+                            logger.info("✓ Response generated using fallback model (Gemini 1.5 Pro)")
+                        else:
+                            logger.info("✓ Response generated using primary model (Gemini 2.5 Pro)")
+
+                        return gemini_response
+
+                    elif response.status_code == 503:
+                        if attempt < max_retries - 1:
+                            # Model overloaded - retry with exponential backoff
+                            wait_time = retry_delay * (2 ** attempt)
+                            logger.warning(f"{model_name} API 503 (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            # Max retries reached for this model, try next model
+                            logger.warning(f"{model_name} unavailable (503). Trying fallback model...")
+                            break
+                    else:
+                        # Other error - don't retry, try fallback model
+                        logger.warning(f"{model_name} error {response.status_code}. Trying fallback model...")
+                        break
+
+                except requests.exceptions.Timeout:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"{model_name} timeout (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"{model_name} timed out. Trying fallback model...")
+                        break
+
+        # If we get here, both models failed
+        return "API Error: Both primary and fallback models unavailable. Please try again later."
 
     except Exception as e:
         return f"Error: {str(e)}"
@@ -450,7 +501,7 @@ Can you show me an example implementation?"""
             }
         }
 
-        url_with_key = f"{GEMINI_API_URL}?key={AI_API_KEY}"
+        url_with_key = f"{GEMINI_API_URL_PRIMARY}?key={AI_API_KEY}"
         response = requests.post(url_with_key, headers=headers, json=data, timeout=15)
 
         if response.status_code == 200:
@@ -1962,11 +2013,15 @@ def handle_query():
         # Call the new Gemini API function
         ai_response = call_gemini_api(query, platform_resources_with_content)
 
+        # Check if AI response contains an error
+        is_error = ai_response.startswith("API Error") or ai_response.startswith("Error:")
+        response_status = 'error' if is_error else 'success'
+
         # Generate Athena insights
         athena_insights = generate_athena_insights(query)
 
         # Generate suggested follow-up questions
-        suggested_followups = generate_followup_suggestions(query, ai_response)
+        suggested_followups = generate_followup_suggestions(query, ai_response) if not is_error else []
 
         # Log agent activity
         agent_name = session.get('agent_name')  # No fallback - validation ensures this exists
@@ -1974,7 +2029,7 @@ def handle_query():
         log_agent_activity(
             agent_name=agent_name,
             query_text=query,
-            response_status='success',
+            response_status=response_status,
             resources_found=len(platform_resources_with_content),
             athena_used=athena_used
         )
@@ -1983,7 +2038,8 @@ def handle_query():
             "response": ai_response,
             "resources": related_resources,
             "athena_insights": athena_insights,
-            "suggested_followups": suggested_followups
+            "suggested_followups": suggested_followups,
+            "error": is_error
         })
 
     except Exception as e:

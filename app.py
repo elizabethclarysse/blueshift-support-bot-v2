@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, send_file, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template_string, send_file, session, redirect, url_for, make_response
 import requests
 import os
 import boto3
@@ -9,7 +9,9 @@ import base64
 import logging
 import re
 import sqlite3
-from collections import defaultdict 
+from collections import defaultdict
+import csv
+from io import StringIO 
 
 # Try to load .env file if it exists (for development/testing)
 try:
@@ -242,6 +244,37 @@ def get_activity_stats(days=30):
     except Exception as e:
         logger.error(f"Error getting activity stats: {e}")
         return None
+
+def delete_agent_entries(agent_name):
+    """Delete all entries for a specific agent"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM activity_logs WHERE agent_name = ?', (agent_name,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted_count
+    except Exception as e:
+        logger.error(f"Error deleting agent entries: {e}")
+        return 0
+
+def export_all_queries():
+    """Export all query data for CSV download"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT agent_name, query_text, timestamp, response_status, resources_found, athena_used
+            FROM activity_logs
+            ORDER BY timestamp DESC
+        ''')
+        all_data = cursor.fetchall()
+        conn.close()
+        return all_data
+    except Exception as e:
+        logger.error(f"Error exporting queries: {e}")
+        return []
 
 # Initialize database on startup
 init_activity_db()
@@ -1891,6 +1924,10 @@ def handle_query():
     if not session.get('logged_in'):
         return jsonify({"error": "Authentication required"}), 401
 
+    # Check if agent has identified themselves
+    if not session.get('agent_identified') or not session.get('agent_name'):
+        return jsonify({"error": "Please identify yourself before making queries"}), 401
+
     try:
         data = request.get_json()
         query = data.get('query', '').strip()
@@ -1932,7 +1969,7 @@ def handle_query():
         suggested_followups = generate_followup_suggestions(query, ai_response)
 
         # Log agent activity
-        agent_name = session.get('agent_name', 'Unknown Agent')
+        agent_name = session.get('agent_name')  # No fallback - validation ensures this exists
         athena_used = athena_insights.get('has_data', False) if athena_insights else False
         log_agent_activity(
             agent_name=agent_name,
@@ -1951,7 +1988,7 @@ def handle_query():
 
     except Exception as e:
         # Log failed query
-        agent_name = session.get('agent_name', 'Unknown Agent')
+        agent_name = session.get('agent_name')  # No fallback - validation ensures this exists
         log_agent_activity(
             agent_name=agent_name,
             query_text=data.get('query', 'Unknown'),
@@ -1966,6 +2003,10 @@ def handle_followup():
     # Check if user is logged in
     if not session.get('logged_in'):
         return jsonify({"error": "Authentication required"}), 401
+
+    # Check if agent has identified themselves
+    if not session.get('agent_identified') or not session.get('agent_name'):
+        return jsonify({"error": "Please identify yourself before making queries"}), 401
 
     try:
         data = request.get_json()
@@ -2015,6 +2056,61 @@ def dashboard():
                                    stats=stats,
                                    top_keywords=top_keywords,
                                    agent_name=session.get('agent_name', 'Unknown'))
+
+@app.route('/dashboard/delete-agent', methods=['POST'])
+def delete_agent():
+    """Delete all entries for a specific agent"""
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return jsonify({"error": "Authentication required"}), 401
+
+    try:
+        data = request.get_json()
+        agent_name = data.get('agent_name', '').strip()
+
+        if not agent_name:
+            return jsonify({"error": "Agent name is required"}), 400
+
+        deleted_count = delete_agent_entries(agent_name)
+        return jsonify({
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Deleted {deleted_count} entries for {agent_name}"
+        })
+    except Exception as e:
+        logger.error(f"Error in delete_agent: {e}")
+        return jsonify({"error": "Failed to delete agent entries"}), 500
+
+@app.route('/dashboard/export')
+def export_queries():
+    """Export all query data as CSV"""
+    # Check if user is logged in
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    try:
+        data = export_all_queries()
+
+        # Create CSV in memory
+        si = StringIO()
+        writer = csv.writer(si)
+
+        # Write header
+        writer.writerow(['Agent Name', 'Query Text', 'Timestamp', 'Response Status', 'Resources Found', 'Athena Used'])
+
+        # Write data
+        for row in data:
+            writer.writerow(row)
+
+        # Create response
+        output = make_response(si.getvalue())
+        output.headers["Content-Disposition"] = f"attachment; filename=blueshift_support_queries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        output.headers["Content-type"] = "text/csv"
+
+        return output
+    except Exception as e:
+        logger.error(f"Error in export_queries: {e}")
+        return "Error exporting data", 500
 
 
 # Exact copy of production HTML with correct styling
@@ -2992,6 +3088,32 @@ DASHBOARD_TEMPLATE = '''
             font-weight: 600;
         }
 
+        .export-btn, .delete-btn {
+            background: #667eea;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+
+        .export-btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .delete-btn {
+            background: #dc3545;
+        }
+
+        .delete-btn:hover {
+            background: #c82333;
+            transform: translateY(-2px);
+        }
+
         .back-btn {
             background: #764ba2;
             color: white;
@@ -3184,6 +3306,8 @@ DASHBOARD_TEMPLATE = '''
             <h1>📊 Agent Activity Dashboard</h1>
             <div class="header-info">
                 <span class="agent-badge">👤 {{ agent_name }}</span>
+                <button onclick="exportQueries()" class="export-btn">📥 Export All Queries</button>
+                <button onclick="deleteUnknownAgent()" class="delete-btn">🗑️ Delete Unknown Agent</button>
                 <a href="/" class="back-btn">← Back to Support Bot</a>
             </div>
         </div>
@@ -3308,6 +3432,36 @@ DASHBOARD_TEMPLATE = '''
             {% endif %}
         </div>
     </div>
+
+    <script>
+        function exportQueries() {
+            window.location.href = '/dashboard/export';
+        }
+
+        function deleteUnknownAgent() {
+            if (confirm('Are you sure you want to delete all "Unknown Agent" entries? This cannot be undone.')) {
+                fetch('/dashboard/delete-agent', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ agent_name: 'Unknown Agent' })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert('Error: ' + (data.error || 'Failed to delete entries'));
+                    }
+                })
+                .catch(error => {
+                    alert('Error: ' + error);
+                });
+            }
+        }
+    </script>
 </body>
 </html>
 '''

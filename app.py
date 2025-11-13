@@ -2034,12 +2034,17 @@ def handle_query():
             athena_used=athena_used
         )
 
+        # If there's an error, return it in the standard error field format
+        if is_error:
+            return jsonify({
+                "error": ai_response  # Return the error message string
+            })
+
         return jsonify({
             "response": ai_response,
             "resources": related_resources,
             "athena_insights": athena_insights,
-            "suggested_followups": suggested_followups,
-            "error": is_error
+            "suggested_followups": suggested_followups
         })
 
     except Exception as e:

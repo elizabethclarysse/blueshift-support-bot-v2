@@ -2537,17 +2537,11 @@ MAIN_TEMPLATE = '''
             font-size: 1.1em;
         }
 
-        /* Deprecated old input style */
+        /* Follow-up input container */
         .followup-container {
-            display: none;
-        }
-
-        #followupInput {
-            display: none;
-        }
-
-        #followupBtn {
-            display: none;
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
         }
 
         .followup-response {

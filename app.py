@@ -3088,7 +3088,7 @@ DASHBOARD_TEMPLATE = '''
             font-weight: 600;
         }
 
-        .export-btn, .delete-btn {
+        .export-btn {
             background: #667eea;
             color: white;
             padding: 10px 20px;
@@ -3102,15 +3102,6 @@ DASHBOARD_TEMPLATE = '''
 
         .export-btn:hover {
             background: #5568d3;
-            transform: translateY(-2px);
-        }
-
-        .delete-btn {
-            background: #dc3545;
-        }
-
-        .delete-btn:hover {
-            background: #c82333;
             transform: translateY(-2px);
         }
 
@@ -3307,7 +3298,6 @@ DASHBOARD_TEMPLATE = '''
             <div class="header-info">
                 <span class="agent-badge">👤 {{ agent_name }}</span>
                 <button onclick="exportQueries()" class="export-btn">📥 Export All Queries</button>
-                <button onclick="deleteUnknownAgent()" class="delete-btn">🗑️ Delete Unknown Agent</button>
                 <a href="/" class="back-btn">← Back to Support Bot</a>
             </div>
         </div>
@@ -3436,30 +3426,6 @@ DASHBOARD_TEMPLATE = '''
     <script>
         function exportQueries() {
             window.location.href = '/dashboard/export';
-        }
-
-        function deleteUnknownAgent() {
-            if (confirm('Are you sure you want to delete all "Unknown Agent" entries? This cannot be undone.')) {
-                fetch('/dashboard/delete-agent', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ agent_name: 'Unknown Agent' })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + (data.error || 'Failed to delete entries'));
-                    }
-                })
-                .catch(error => {
-                    alert('Error: ' + error);
-                });
-            }
         }
     </script>
 </body>

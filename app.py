@@ -26,9 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-2.5-pro (best quality), with fallback to gemini-1.5-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
+# Primary model: gemini-3-pro-preview (latest), with fallback to gemini-2.5-pro for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -395,17 +395,17 @@ FORMATTING RULES:
             }
         }
         
-        # Try primary model (2.5 Pro) first, then fallback to 1.5 Pro
+        # Try primary model (3 Pro Preview) first, then fallback to 2.5 Pro
         models_to_try = [
-            ("Gemini 2.5 Pro", GEMINI_API_URL_PRIMARY),
-            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
+            ("Gemini 3 Pro", GEMINI_API_URL_PRIMARY),
+            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
         ]
 
         for model_name, model_url in models_to_try:
             url_with_key = f"{model_url}?key={AI_API_KEY}"
 
             # Retry logic for 503 errors (model overloaded)
-            max_retries = 2 if model_name == "Gemini 2.5 Pro" else 1  # Only retry 2.5 Pro
+            max_retries = 2 if model_name == "Gemini 3 Pro" else 1  # Only retry 3 Pro
             retry_delay = 1  # seconds
 
             for attempt in range(max_retries):
@@ -422,10 +422,10 @@ FORMATTING RULES:
                             return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
 
                         # Log which model was used
-                        if model_name == "Gemini 1.5 Pro":
-                            logger.info("✓ Response generated using fallback model (Gemini 1.5 Pro)")
+                        if model_name == "Gemini 2.5 Pro":
+                            logger.info("✓ Response generated using fallback model (Gemini 2.5 Pro)")
                         else:
-                            logger.info("✓ Response generated using primary model (Gemini 2.5 Pro)")
+                            logger.info("✓ Response generated using primary model (Gemini 3 Pro)")
 
                         return gemini_response
 

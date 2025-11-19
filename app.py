@@ -2279,6 +2279,8 @@ LOGIN_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
+                    // Clear any old session data from browser
+                    sessionStorage.clear();
                     // Redirect to main app
                     window.location.href = '/';
                 } else {

@@ -1915,9 +1915,17 @@ def login():
         username = data.get('username', '')
         password = data.get('password', '')
 
-        # Check credentials
-        if username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
+        # Check credentials - Admin login
+        if username == 'Admin' and password == 'BlueShiftAdmin#2025!':
             session['logged_in'] = True
+            session['is_admin'] = True
+            session['agent_identified'] = False  # Flag to show identification prompt
+            session.permanent = True
+            return jsonify({'success': True})
+        # Regular support agent login
+        elif username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
+            session['logged_in'] = True
+            session['is_admin'] = False
             session['agent_identified'] = False  # Flag to show identification prompt
             session.permanent = True
             return jsonify({'success': True})
@@ -1948,7 +1956,15 @@ def index():
     # Check if user is logged in
     if not session.get('logged_in'):
         return redirect(url_for('login'))
-    return render_template_string(MAIN_TEMPLATE)
+    is_admin = session.get('is_admin', False)
+    return render_template_string(MAIN_TEMPLATE, is_admin=is_admin)
+
+@app.route('/check-admin')
+def check_admin():
+    """Check if current user is admin"""
+    if not session.get('logged_in'):
+        return jsonify({'is_admin': False})
+    return jsonify({'is_admin': session.get('is_admin', False)})
 
 @app.route('/blueshift-favicon.png')
 def favicon():
@@ -2090,10 +2106,14 @@ def handle_followup():
 
 @app.route('/dashboard')
 def dashboard():
-    """Agent activity dashboard"""
+    """Agent activity dashboard - Admin only"""
     # Check if user is logged in
     if not session.get('logged_in'):
         return redirect(url_for('login'))
+
+    # Check if user is admin
+    if not session.get('is_admin', False):
+        return "Access denied. Admin privileges required.", 403
 
     # Get activity statistics
     stats = get_activity_stats(days=30)
@@ -2120,10 +2140,14 @@ def dashboard():
 
 @app.route('/dashboard/delete-agent', methods=['POST'])
 def delete_agent():
-    """Delete all entries for a specific agent"""
+    """Delete all entries for a specific agent - Admin only"""
     # Check if user is logged in
     if not session.get('logged_in'):
         return jsonify({"error": "Authentication required"}), 401
+
+    # Check if user is admin
+    if not session.get('is_admin', False):
+        return jsonify({"error": "Admin privileges required"}), 403
 
     try:
         data = request.get_json()
@@ -2144,10 +2168,14 @@ def delete_agent():
 
 @app.route('/dashboard/export')
 def export_queries():
-    """Export all query data as CSV"""
+    """Export all query data as CSV - Admin only"""
     # Check if user is logged in
     if not session.get('logged_in'):
         return redirect(url_for('login'))
+
+    # Check if user is admin
+    if not session.get('is_admin', False):
+        return "Access denied. Admin privileges required.", 403
 
     try:
         data = export_all_queries()
@@ -2782,7 +2810,9 @@ MAIN_TEMPLATE = '''
     <div class="container">
         <div style="text-align: right; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
             <span id="agentBadge" class="agent-badge-top" style="display: none;">👤 <span id="agentNameDisplay"></span></span>
+            {% if is_admin %}
             <a href="/dashboard" style="display: inline-block; padding: 10px 20px; background: linear-gradient(45deg, #764ba2, #667eea); color: white; text-decoration: none; border-radius: 20px; font-weight: 600; font-size: 14px; transition: all 0.3s;">📊 View Dashboard</a>
+            {% endif %}
         </div>
         <h1><img src="/blueshift-favicon.png" alt="Blueshift" style="height: 40px; vertical-align: middle; margin-right: 10px;">Blueshift Support Bot</h1>
 

@@ -26,8 +26,8 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-3-pro-preview (latest), with fallback to gemini-2.5-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent"
+# Primary model: gemini-2.5-flash (stable), with fallback to gemini-2.5-pro for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
 # ---------------------------------
 
@@ -395,9 +395,9 @@ FORMATTING RULES:
             }
         }
         
-        # Try primary model (3 Pro Preview) first, then fallback to 2.5 Pro
+        # Try primary model (2.5 Flash) first, then fallback to 2.5 Pro
         models_to_try = [
-            ("Gemini 3 Pro", GEMINI_API_URL_PRIMARY),
+            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
             ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
         ]
 
@@ -405,7 +405,7 @@ FORMATTING RULES:
             url_with_key = f"{model_url}?key={AI_API_KEY}"
 
             # Retry logic for 503 errors (model overloaded)
-            max_retries = 2 if model_name == "Gemini 3 Pro" else 1  # Only retry 3 Pro
+            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1  # Only retry Flash
             retry_delay = 1  # seconds
 
             for attempt in range(max_retries):
@@ -425,7 +425,7 @@ FORMATTING RULES:
                         if model_name == "Gemini 2.5 Pro":
                             logger.info("✓ Response generated using fallback model (Gemini 2.5 Pro)")
                         else:
-                            logger.info("✓ Response generated using primary model (Gemini 3 Pro)")
+                            logger.info("✓ Response generated using primary model (Gemini 2.5 Flash)")
 
                         return gemini_response
 
@@ -442,7 +442,8 @@ FORMATTING RULES:
                             break
                     else:
                         # Other error - don't retry, try fallback model
-                        logger.warning(f"{model_name} error {response.status_code}. Trying fallback model...")
+                        error_body = response.text[:500] if hasattr(response, 'text') else 'No error body'
+                        logger.warning(f"{model_name} error {response.status_code}: {error_body}. Trying fallback model...")
                         break
 
                 except requests.exceptions.Timeout:

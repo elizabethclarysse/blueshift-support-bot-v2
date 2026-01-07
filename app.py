@@ -26,9 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-2.5-flash (stable), with fallback to gemini-2.5-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+# Primary model: gemini-1.5-flash (stable and widely available), with fallback to gemini-1.5-pro for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -395,17 +395,17 @@ FORMATTING RULES:
             }
         }
         
-        # Try primary model (2.5 Flash) first, then fallback to 2.5 Pro
+        # Try primary model (1.5 Flash) first, then fallback to 1.5 Pro
         models_to_try = [
-            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
-            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
+            ("Gemini 1.5 Flash", GEMINI_API_URL_PRIMARY),
+            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
         ]
 
         for model_name, model_url in models_to_try:
             url_with_key = f"{model_url}?key={AI_API_KEY}"
 
             # Retry logic for 503 errors (model overloaded)
-            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1  # Only retry Flash
+            max_retries = 2 if model_name == "Gemini 1.5 Flash" else 1  # Only retry Flash
             retry_delay = 1  # seconds
 
             for attempt in range(max_retries):
@@ -536,14 +536,14 @@ Please provide a focused answer to the follow-up question, referencing the previ
 
         # Try primary model first, then fallback
         models_to_try = [
-            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
-            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
+            ("Gemini 1.5 Flash", GEMINI_API_URL_PRIMARY),
+            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
         ]
 
         for model_name, model_url in models_to_try:
             url_with_key = f"{model_url}?key={AI_API_KEY}"
 
-            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1
+            max_retries = 2 if model_name == "Gemini 1.5 Flash" else 1
             retry_delay = 1
 
             for attempt in range(max_retries):
@@ -3710,3 +3710,4 @@ if __name__ == '__main__':
     print("--- ATTEMPTING TO START FLASK APP ---")
 
     app.run(host='0.0.0.0', port=port, debug=True)
+

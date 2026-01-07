@@ -26,9 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-1.5-flash (stable), with fallback to gemini-1.5-pro
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
+# Primary model: gemini-2.5-flash (stable), with fallback to gemini-2.5-pro for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -395,17 +395,17 @@ FORMATTING RULES:
             }
         }
         
-        # Try primary model (1.5 Flash) first, then fallback to 1.5 Pro
+        # Try primary model (2.5 Flash) first, then fallback to 2.5 Pro
         models_to_try = [
-            ("Gemini 1.5 Flash", GEMINI_API_URL_PRIMARY),
-            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
+            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
+            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
         ]
 
         for model_name, model_url in models_to_try:
             url_with_key = f"{model_url}?key={AI_API_KEY}"
 
             # Retry logic for 503 errors (model overloaded)
-            max_retries = 2 if model_name == "Gemini 1.5 Flash" else 1  # Only retry Flash
+            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1  # Only retry Flash
             retry_delay = 1  # seconds
 
             for attempt in range(max_retries):
@@ -422,7 +422,10 @@ FORMATTING RULES:
                             return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
 
                         # Log which model was used
-                        logger.info(f"✓ Response generated using {model_name}")
+                        if model_name == "Gemini 2.5 Pro":
+                            logger.info("✓ Response generated using fallback model (Gemini 2.5 Pro)")
+                        else:
+                            logger.info("✓ Response generated using primary model (Gemini 2.5 Flash)")
 
                         return gemini_response
 
@@ -440,10 +443,7 @@ FORMATTING RULES:
                     else:
                         # Other error - don't retry, try fallback model
                         error_body = response.text[:500] if hasattr(response, 'text') else 'No error body'
-                        logger.error(f"{model_name} error {response.status_code}: {error_body}")
-                        # Return error immediately if it's 400 (bad request) or 401 (auth error)
-                        if response.status_code in [400, 401, 403, 404]:
-                            return f"API Error: {response.status_code} - {error_body}"
+                        logger.warning(f"{model_name} error {response.status_code}: {error_body}. Trying fallback model...")
                         break
 
                 except requests.exceptions.Timeout:
@@ -462,134 +462,6 @@ FORMATTING RULES:
     except Exception as e:
         return f"Error: {str(e)}"
 # --- END REPLACEMENT ---
-
-
-def call_gemini_api_with_conversation(followup_query, original_query, original_response, platform_resources=None):
-    """Call Gemini API with conversation context for follow-up questions.
-
-    This maintains the conversation thread by including the original query and response,
-    allowing the AI to provide contextually relevant follow-up answers.
-    """
-    if not AI_API_KEY:
-        return "Error: GEMINI_API_KEY is not configured."
-
-    try:
-        headers = {
-            'Content-Type': 'application/json',
-        }
-
-        # Build context from platform resources if available
-        platform_context = ""
-        if platform_resources and len(platform_resources) > 0:
-            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and len(r.get('content', '').strip()) > 50]
-
-            if resources_with_content:
-                platform_context = "\n\nRELEVANT DOCUMENTATION:\n"
-                for i, resource in enumerate(resources_with_content[:3]):
-                    platform_context += f"\n=== {resource['title']} ===\n"
-                    platform_context += f"{resource['content'][:1500]}\n"
-
-        # System instruction for conversational follow-ups
-        system_instruction = """You are Blueshift support assistant helping troubleshoot customer issues. You are now answering a FOLLOW-UP question based on a previous conversation.
-
-INSTRUCTIONS:
-1. Reference the original conversation context provided below
-2. Provide a direct, focused answer to the follow-up question
-3. Use **bold markdown** for key terms, UI elements, and important concepts
-4. Keep the response conversational but informative
-5. If clarifying previous information, acknowledge what was discussed before
-6. Provide additional details, examples, or clarifications as requested
-
-FORMATTING:
-- Use markdown formatting with **bold** for emphasis
-- Use numbered lists for steps
-- Use bullet points for options or features
-- Be concise but thorough"""
-
-        # Build the conversation history
-        conversation_prompt = f"""{system_instruction}
-
----
-PREVIOUS CONVERSATION:
-
-Original Question: {original_query}
-
-My Previous Response: {original_response[:1500]}
-
----
-FOLLOW-UP QUESTION: {followup_query}
-{platform_context}
-
-Please provide a focused answer to the follow-up question, referencing the previous conversation as needed."""
-
-        contents_array = [
-            {"role": "user", "parts": [{"text": conversation_prompt}]}
-        ]
-
-        data = {
-            "contents": contents_array,
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 3000
-            }
-        }
-
-        # Try primary model first, then fallback
-        models_to_try = [
-            ("Gemini 1.5 Flash", GEMINI_API_URL_PRIMARY),
-            ("Gemini 1.5 Pro", GEMINI_API_URL_FALLBACK)
-        ]
-
-        for model_name, model_url in models_to_try:
-            url_with_key = f"{model_url}?key={AI_API_KEY}"
-
-            max_retries = 2 if model_name == "Gemini 1.5 Flash" else 1
-            retry_delay = 1
-
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"Calling {model_name} for follow-up (attempt {attempt + 1})")
-                    response = requests.post(url_with_key, headers=headers, json=data, timeout=30)
-
-                    if response.status_code == 200:
-                        response_json = response.json()
-                        text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-
-                        if text:
-                            logger.info(f"{model_name} follow-up response successful")
-                            return text
-                        else:
-                            logger.warning(f"{model_name} returned empty text")
-                            break
-
-                    elif response.status_code == 503:
-                        if attempt < max_retries - 1:
-                            wait_time = retry_delay * (2 ** attempt)
-                            logger.warning(f"{model_name} overloaded. Retrying in {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                        else:
-                            logger.warning(f"{model_name} unavailable. Trying fallback...")
-                            break
-                    else:
-                        logger.error(f"{model_name} error {response.status_code}: {response.text[:200]}")
-                        break
-
-                except requests.Timeout:
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"{model_name} timeout. Retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(f"{model_name} timed out. Trying fallback...")
-                        break
-
-        return "API Error: Unable to process follow-up question. Please try again later."
-
-    except Exception as e:
-        logger.error(f"Error in conversational follow-up: {e}")
-        return f"Error: {str(e)}"
 
 
 def generate_followup_suggestions(original_query, ai_response):
@@ -2185,11 +2057,6 @@ def handle_query():
                 "error": ai_response  # Return the error message string
             })
 
-        # Store conversation context in session for follow-ups
-        session['last_query'] = query
-        session['last_response'] = ai_response
-        session['last_resources'] = platform_resources_with_content
-
         return jsonify({
             "response": ai_response,
             "resources": related_resources,
@@ -2210,7 +2077,7 @@ def handle_query():
 
 @app.route('/followup', methods=['POST'])
 def handle_followup():
-    """Handle follow-up questions with conversation context"""
+    """Handle follow-up questions"""
     # Check if user is logged in
     if not session.get('logged_in'):
         return jsonify({"error": "Authentication required"}), 401
@@ -2226,43 +2093,15 @@ def handle_followup():
         if not followup_query:
             return jsonify({"error": "Please provide a follow-up question"})
 
-        # Get conversation context from session
-        original_query = session.get('last_query', '')
-        original_response = session.get('last_response', '')
-        platform_resources = session.get('last_resources', None)
-
-        # Log the follow-up query
-        agent_name = session.get('agent_name')
-        logger.info(f"Follow-up query from {agent_name}: {followup_query[:100]}")
-
-        # Call Gemini API with conversation context
-        if original_query and original_response:
-            ai_response = call_gemini_api_with_conversation(
-                followup_query,
-                original_query,
-                original_response,
-                platform_resources
-            )
-        else:
-            # Fallback to regular API if no context available
-            logger.warning("No conversation context found, using standard API call")
-            ai_response = call_gemini_api(followup_query)
-
-        # Log the follow-up activity
-        log_agent_activity(
-            agent_name=agent_name,
-            query_text=f"FOLLOW-UP: {followup_query}",
-            response_status='success' if not ai_response.startswith("Error") else 'error',
-            resources_found=0,
-            athena_used=False
-        )
+        # Call Gemini API
+        ai_response = call_gemini_api(followup_query)
 
         return jsonify({
             "response": ai_response
         })
 
     except Exception as e:
-        logger.error(f"Error in handle_followup: {e}")
+        print(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
 
 

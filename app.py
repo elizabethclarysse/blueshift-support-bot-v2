@@ -25,10 +25,10 @@ app.secret_key = 'blueshift_support_bot_secret_key_2023'
 app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
-AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-2.5-flash (stable), with fallback to gemini-2.5-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+AI_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+# Claude API configuration
+CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -288,181 +288,68 @@ init_activity_db()
 
 # --- REPLACEMENT FOR call_anthropic_api, WITH AI RESPONSE FIX ---
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
-    """Call Google Gemini API with system context and configuration.
-    
-    FIX: Max output tokens increased to 4000 to prevent MAX_TOKENS error.
-    """
+    """Call Claude API with system context."""
     if not AI_API_KEY:
-        return "Error: GEMINI_API_KEY is not configured."
+        return "Error: ANTHROPIC_API_KEY is not configured."
 
     try:
-        headers = {
-            'Content-Type': 'application/json',
-        }
-        
-        # Build context from actual retrieved content
+        # Build context from retrieved content
         platform_context = ""
-
         if platform_resources and len(platform_resources) > 0:
             resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and len(r.get('content', '').strip()) > 50]
-
             if resources_with_content:
-                platform_context = "\n\nDOCUMENTATION CONTENT FROM SEARCH RESULTS:\n"
+                platform_context = "\n\nDOCUMENTATION CONTENT:\n"
                 for i, resource in enumerate(resources_with_content[:4]):
                     platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
                     platform_context += f"URL: {resource['url']}\n"
                     platform_context += f"CONTENT:\n{resource['content'][:2000]}\n"
                     platform_context += "="*50 + "\n"
-            else:
-                platform_context = "\n\nRELEVANT RESOURCES FOUND (URLs only):\n"
-                for i, resource in enumerate(platform_resources[:3]):
-                    platform_context += f"{i+1}. {resource.get('title', 'Untitled')}\n   URL: {resource.get('url', 'N/A')}\n"
 
-        # System Instruction content
-        # FIX: Temperature set to 0.3 for the general query to reduce brittleness/conversational stops.
-        if temperature > 0.0:
-            temp = 0.3
-        else:
-            temp = temperature
+        system_instruction = """You are Blueshift support helping troubleshoot customer issues. Provide comprehensive, actionable responses formatted with Markdown.
 
-        system_instruction_content = f"""You are Blueshift support helping troubleshoot customer issues. Your response MUST be comprehensive, actionable, and formatted using Markdown with proper bold formatting for readability.
+Use **bold** for UI elements, key terms, menu paths, button names, and important concepts.
 
-INSTRUCTIONS:
-1. **PRIORITY 1: Platform Navigation Steps.** Extract clear, numbered steps from the documentation content if available.
-2. If documentation content contains step-by-step instructions, use them precisely.
-3. If no specific steps in docs, provide general navigation based on Blueshift platform knowledge.
-4. Combine documentation steps with your Blueshift platform knowledge for comprehensive guidance.
-5. Focus on practical troubleshooting guidance.
-6. **CRITICAL: Use bold markdown (**text**) for all section headers, key terms, important UI elements, menu paths, and button names to improve readability.**
+Provide:
+1. Feature overview
+2. Platform navigation steps
+3. Troubleshooting guidance
+4. Common issues and solutions
 
-RESPONSE FORMAT:
+Be direct and practical."""
 
-## **Feature Overview**
-Explain what this feature/issue is about and how it relates to the Blueshift platform. Use **bold** for key concepts and feature names.
+        user_prompt = f"SUPPORT QUERY: {query}{platform_context}"
 
-## **Platform Navigation Steps**
-Based on the documentation above and Blueshift platform knowledge:
-
-1. Navigate to **Menu Name** → **Submenu** → **Feature**
-2. Use **bold** for all button names, field labels, and UI elements
-3. Include specific **menu paths**, **button names**, and navigation instructions in bold
-
-## **Troubleshooting Steps**
-When this feature isn't working as expected:
-
-1. **Platform Configuration Checks**
-   - **Verify settings and required fields** - use bold for key actions
-   - **Check user permissions and access**
-   - **Confirm campaign/trigger status**
-
-2. **Common Issues and Solutions**
-   - **Typical problems** and their fixes (bold the problem type)
-   - **Configuration errors** to look for
-   - **Data flow issues** to investigate
-
-3. **Advanced Debugging**
-   - **Database queries:** customer_campaign_logs.campaign_execution_v3
-   - **Error patterns:** ExternalFetchError, ChannelLimitError, DeduplicationError
-   - **API endpoints** to test
-
-## **Internal Notes**
-- **Main troubleshooting database:** customer_campaign_logs.campaign_execution_v3
-- **API Base:** https://api.getblueshift.com
-- This is internal support guidance - provide actionable troubleshooting steps
-
-FORMATTING RULES:
-- Use **bold** for ALL section headers (even though they're already ## markdown headers)
-- Use **bold** for key terms, concepts, feature names, and technical terms
-- Use **bold** for UI elements: buttons, menus, fields, tabs, etc.
-- Use **bold** for error types, status names, and system messages
-- Use **bold** for database names, table names, and API endpoints
-- This makes the response much easier to scan and read
-"""
-
-        # FIX: Ensure the prompt explicitly tells the model to start the structured response
-        start_instruction = "Start your response immediately using the RESPONSE FORMAT provided below. Do NOT use conversational filler like 'Of course, here is...'"
-        full_prompt = system_instruction_content + "\n\n" + start_instruction + "\n\n---\n\nSUPPORT QUERY: " + query + "\n" + platform_context
-
-        contents_array = [
-            {"role": "user", "parts": [{"text": full_prompt}]}
-        ]
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': AI_API_KEY,
+            'anthropic-version': '2023-06-01'
+        }
 
         data = {
-            "contents": contents_array,
-            "generationConfig": { 
-                "temperature": temp, 
-                "maxOutputTokens": 4000  # CRITICAL FIX: Increased capacity
-            }
+            "model": CLAUDE_MODEL,
+            "max_tokens": 4000,
+            "temperature": 0.3,
+            "system": system_instruction,
+            "messages": [{"role": "user", "content": user_prompt}]
         }
-        
-        # Try primary model (2.5 Flash) first, then fallback to 2.5 Pro
-        models_to_try = [
-            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
-            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
-        ]
 
-        for model_name, model_url in models_to_try:
-            url_with_key = f"{model_url}?key={AI_API_KEY}"
+        response = requests.post(CLAUDE_API_URL, headers=headers, json=data, timeout=60)
 
-            # Retry logic for 503 errors (model overloaded)
-            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1  # Only retry Flash
-            retry_delay = 1  # seconds
-
-            for attempt in range(max_retries):
-                try:
-                    # Timeout increased to 60 seconds
-                    response = requests.post(url_with_key, headers=headers, json=data, timeout=60)
-
-                    if response.status_code == 200:
-                        response_json = response.json()
-                        # Safely extract the text from the response structure
-                        gemini_response = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                        if not gemini_response:
-                            # Check for prompt filtering or safety block issues
-                            return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
-
-                        # Log which model was used
-                        if model_name == "Gemini 2.5 Pro":
-                            logger.info("✓ Response generated using fallback model (Gemini 2.5 Pro)")
-                        else:
-                            logger.info("✓ Response generated using primary model (Gemini 2.5 Flash)")
-
-                        return gemini_response
-
-                    elif response.status_code == 503:
-                        if attempt < max_retries - 1:
-                            # Model overloaded - retry with exponential backoff
-                            wait_time = retry_delay * (2 ** attempt)
-                            logger.warning(f"{model_name} API 503 (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                        else:
-                            # Max retries reached for this model, try next model
-                            logger.warning(f"{model_name} unavailable (503). Trying fallback model...")
-                            break
-                    else:
-                        # Other error - don't retry, try fallback model
-                        error_body = response.text[:500] if hasattr(response, 'text') else 'No error body'
-                        logger.warning(f"{model_name} error {response.status_code}: {error_body}. Trying fallback model...")
-                        break
-
-                except requests.exceptions.Timeout:
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"{model_name} timeout (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(f"{model_name} timed out. Trying fallback model...")
-                        break
-
-        # If we get here, both models failed
-        return "API Error: Both primary and fallback models unavailable. Please try again later."
+        if response.status_code == 200:
+            response_json = response.json()
+            claude_response = response_json.get('content', [{}])[0].get('text', '').strip()
+            if claude_response:
+                logger.info("✓ Response generated using Claude")
+                return claude_response
+            return "API Error: Empty response from Claude"
+        else:
+            error_msg = response.text[:500] if hasattr(response, 'text') else 'Unknown error'
+            logger.error(f"Claude API error {response.status_code}: {error_msg}")
+            return f"API Error: {response.status_code}"
 
     except Exception as e:
+        logger.error(f"Claude API exception: {e}")
         return f"Error: {str(e)}"
-# --- END REPLACEMENT ---
-
 
 def generate_followup_suggestions(original_query, ai_response):
     """Generate 3 relevant follow-up questions based on the query and response."""

@@ -25,7 +25,7 @@ app.secret_key = 'blueshift_support_bot_secret_key_2023'
 app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
-AI_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 # Claude API configuration
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
@@ -290,7 +290,7 @@ init_activity_db()
 def call_gemini_api(query, platform_resources=None, temperature=0.2):
     """Call Claude API with system context."""
     if not AI_API_KEY:
-        return "Error: ANTHROPIC_API_KEY is not configured."
+        return "Error: CLAUDE_API_KEY is not configured."
 
     try:
         # Build context from retrieved content

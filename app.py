@@ -464,6 +464,81 @@ FORMATTING RULES:
 # --- END REPLACEMENT ---
 
 
+def call_gemini_api_with_conversation(followup_query, original_query, original_response, platform_resources=None):
+    """Call Gemini API with conversation context for follow-up questions."""
+    if not AI_API_KEY:
+        return "Error: GEMINI_API_KEY is not configured."
+
+    try:
+        headers = {'Content-Type': 'application/json'}
+
+        # Build context from platform resources if available
+        platform_context = ""
+        if platform_resources and len(platform_resources) > 0:
+            resources_with_content = [r for r in platform_resources if isinstance(r, dict) and 'content' in r and len(r.get('content', '').strip()) > 50]
+            if resources_with_content:
+                platform_context = "\n\nRELEVANT DOCUMENTATION:\n"
+                for i, resource in enumerate(resources_with_content[:2]):
+                    platform_context += f"\n{resource['title']}: {resource['content'][:800]}\n"
+
+        # System instruction for conversational follow-ups
+        conversation_prompt = f"""You are Blueshift support helping with a follow-up question. The user previously asked about something, and now has a related question.
+
+PREVIOUS CONVERSATION:
+User asked: {original_query}
+
+Your previous answer: {original_response[:1200]}
+{platform_context}
+
+CURRENT FOLLOW-UP QUESTION: {followup_query}
+
+Provide a direct, conversational answer to their follow-up question. Reference the previous conversation naturally (e.g., "As I mentioned before..." or "Building on that..."). Use **bold markdown** for key terms and UI elements. Be concise but helpful."""
+
+        contents_array = [{"role": "user", "parts": [{"text": conversation_prompt}]}]
+        data = {
+            "contents": contents_array,
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2000}
+        }
+
+        # Try primary model first, then fallback
+        models_to_try = [
+            ("Gemini 2.5 Flash", GEMINI_API_URL_PRIMARY),
+            ("Gemini 2.5 Pro", GEMINI_API_URL_FALLBACK)
+        ]
+
+        for model_name, model_url in models_to_try:
+            url_with_key = f"{model_url}?key={AI_API_KEY}"
+            max_retries = 2 if model_name == "Gemini 2.5 Flash" else 1
+
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(url_with_key, headers=headers, json=data, timeout=30)
+                    if response.status_code == 200:
+                        response_json = response.json()
+                        text = response_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+                        if text:
+                            logger.info(f"✓ Follow-up response from {model_name}")
+                            return text
+                    elif response.status_code == 503:
+                        if attempt < max_retries - 1:
+                            time.sleep(1 * (2 ** attempt))
+                            continue
+                        break
+                    else:
+                        logger.error(f"{model_name} error {response.status_code}")
+                        break
+                except requests.Timeout:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    break
+
+        return "Error: Unable to process follow-up. Please try again."
+    except Exception as e:
+        logger.error(f"Follow-up error: {e}")
+        return f"Error: {str(e)}"
+
+
 def generate_followup_suggestions(original_query, ai_response):
     """Generate 3 relevant follow-up questions based on the query and response."""
     if not AI_API_KEY:
@@ -2057,6 +2132,11 @@ def handle_query():
                 "error": ai_response  # Return the error message string
             })
 
+        # Store conversation context in session for follow-ups
+        session['last_query'] = query
+        session['last_response'] = ai_response
+        session['last_resources'] = platform_resources_with_content
+
         return jsonify({
             "response": ai_response,
             "resources": related_resources,
@@ -2077,7 +2157,7 @@ def handle_query():
 
 @app.route('/followup', methods=['POST'])
 def handle_followup():
-    """Handle follow-up questions"""
+    """Handle follow-up questions with conversation context"""
     # Check if user is logged in
     if not session.get('logged_in'):
         return jsonify({"error": "Authentication required"}), 401
@@ -2093,15 +2173,43 @@ def handle_followup():
         if not followup_query:
             return jsonify({"error": "Please provide a follow-up question"})
 
-        # Call Gemini API
-        ai_response = call_gemini_api(followup_query)
+        # Get conversation context from session
+        original_query = session.get('last_query', '')
+        original_response = session.get('last_response', '')
+        platform_resources = session.get('last_resources', None)
+
+        # Log the follow-up
+        agent_name = session.get('agent_name')
+        logger.info(f"Follow-up from {agent_name}: {followup_query[:100]}")
+
+        # Call Gemini API with conversation context
+        if original_query and original_response:
+            ai_response = call_gemini_api_with_conversation(
+                followup_query,
+                original_query,
+                original_response,
+                platform_resources
+            )
+        else:
+            # Fallback if no context
+            logger.warning("No conversation context, using standard API")
+            ai_response = call_gemini_api(followup_query)
+
+        # Log activity
+        log_agent_activity(
+            agent_name=agent_name,
+            query_text=f"FOLLOW-UP: {followup_query}",
+            response_status='success' if not ai_response.startswith("Error") else 'error',
+            resources_found=0,
+            athena_used=False
+        )
 
         return jsonify({
             "response": ai_response
         })
 
     except Exception as e:
-        print(f"Error in handle_followup: {e}")
+        logger.error(f"Error in handle_followup: {e}")
         return jsonify({"error": "An error occurred processing your follow-up"})
 
 

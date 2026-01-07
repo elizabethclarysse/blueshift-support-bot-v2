@@ -28,7 +28,7 @@ app.permanent_session_lifetime = timedelta(hours=12)
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 # Claude API configuration
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+CLAUDE_MODEL = "claude-sonnet-4-5"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables

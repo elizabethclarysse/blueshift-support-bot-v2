@@ -26,9 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-pro (latest), with fallback to gemini-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+# Primary model: gemini-2.0-flash-exp (latest), with fallback to gemini-2.0-flash-exp for reliability
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables

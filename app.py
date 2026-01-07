@@ -26,9 +26,9 @@ app.permanent_session_lifetime = timedelta(hours=12)
 
 # --- GEMINI API CONFIGURATION ---
 AI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# Primary model: gemini-1.5-flash (stable and widely available), with fallback to gemini-1.5-pro for reliability
-GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
+# Primary model: gemini-1.5-flash-002 (stable production version), with fallback to gemini-1.5-pro-002
+GEMINI_API_URL_PRIMARY = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-002:generateContent"
+GEMINI_API_URL_FALLBACK = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-002:generateContent"
 # ---------------------------------
 
 # AWS Athena configuration - set these via environment variables
@@ -422,10 +422,7 @@ FORMATTING RULES:
                             return f"API Error: Response blocked or empty. Reason: {response_json.get('candidates', [{}])[0].get('finishReason')}"
 
                         # Log which model was used
-                        if model_name == "Gemini 2.5 Pro":
-                            logger.info("✓ Response generated using fallback model (Gemini 2.5 Pro)")
-                        else:
-                            logger.info("✓ Response generated using primary model (Gemini 2.5 Flash)")
+                        logger.info(f"✓ Response generated using {model_name}")
 
                         return gemini_response
 
@@ -443,7 +440,10 @@ FORMATTING RULES:
                     else:
                         # Other error - don't retry, try fallback model
                         error_body = response.text[:500] if hasattr(response, 'text') else 'No error body'
-                        logger.warning(f"{model_name} error {response.status_code}: {error_body}. Trying fallback model...")
+                        logger.error(f"{model_name} error {response.status_code}: {error_body}")
+                        # Return error immediately if it's 400 (bad request) or 401 (auth error)
+                        if response.status_code in [400, 401, 403, 404]:
+                            return f"API Error: {response.status_code} - {error_body}"
                         break
 
                 except requests.exceptions.Timeout:
@@ -3710,4 +3710,3 @@ if __name__ == '__main__':
     print("--- ATTEMPTING TO START FLASK APP ---")
 
     app.run(host='0.0.0.0', port=port, debug=True)
-

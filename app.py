@@ -300,14 +300,20 @@ def call_gemini_api(query, platform_resources=None, temperature=0.2):
             if resources_with_content:
                 platform_context = "\n\nDOCUMENTATION CONTENT:\n"
                 for i, resource in enumerate(resources_with_content[:4]):
-                    platform_context += f"\n=== SOURCE {i+1}: {resource['title']} ===\n"
+                    source_type = resource.get('source', 'documentation').upper()
+                    platform_context += f"\n=== {source_type} SOURCE {i+1}: {resource['title']} ===\n"
                     platform_context += f"URL: {resource['url']}\n"
-                    platform_context += f"CONTENT:\n{resource['content'][:2000]}\n"
+
+                    # Use more content for Zendesk tickets (up to 8000 chars to include full comments)
+                    max_content = 8000 if resource.get('source') == 'zendesk' else 2000
+                    platform_context += f"CONTENT:\n{resource['content'][:max_content]}\n"
                     platform_context += "="*50 + "\n"
 
         system_instruction = """You are Blueshift support helping troubleshoot customer issues. Provide comprehensive, actionable responses formatted with Markdown.
 
 Use **bold** for UI elements, key terms, menu paths, button names, and important concepts.
+
+When documentation content is provided (including Help Docs, API Docs, JIRA tickets, or Zendesk Support Tickets), use that information to answer the query. Support ticket content includes the ticket description and recent comments.
 
 Provide:
 1. Feature overview
@@ -788,11 +794,16 @@ def search_zendesk_tickets_improved(query, limit=5):
         if ticket_id:
             ticket_details = get_zendesk_ticket_details(ticket_id)
             if ticket_details:
+                logger.info(f"✓ Successfully fetched Zendesk ticket #{ticket_id}: {ticket_details['subject']}")
+                logger.info(f"  - Description length: {len(ticket_details.get('description', ''))}")
+                logger.info(f"  - Number of comments: {len(ticket_details.get('comments', []))}")
                 return [{
                     'title': f"Ticket #{ticket_details['id']}: {ticket_details['subject']}",
                     'url': ticket_details['url'],
                     'details': ticket_details
                 }]
+            else:
+                logger.warning(f"Failed to fetch ticket details for ticket #{ticket_id}")
 
         # Otherwise, perform regular search
         auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
@@ -1175,18 +1186,26 @@ def generate_related_resources_improved(query):
             # Check if we have full ticket details
             if 'details' in ticket:
                 details = ticket['details']
-                ticket_content = f"Support Ticket #{details['id']}: {details['subject']}\n\n"
+                ticket_content = f"=== ZENDESK SUPPORT TICKET ===\n"
+                ticket_content += f"Ticket ID: #{details['id']}\n"
+                ticket_content += f"Subject: {details['subject']}\n"
                 ticket_content += f"Status: {details['status']}\n"
                 ticket_content += f"Priority: {details.get('priority', 'N/A')}\n"
-                ticket_content += f"Created: {details['created_at']}\n\n"
-                ticket_content += f"Description:\n{details.get('description', 'No description')}\n\n"
+                ticket_content += f"Created: {details['created_at']}\n"
+                ticket_content += f"Updated: {details['updated_at']}\n"
+                ticket_content += f"\n--- ORIGINAL DESCRIPTION ---\n"
+                ticket_content += f"{details.get('description', 'No description')}\n"
 
-                # Include recent comments
-                if details.get('comments'):
-                    ticket_content += "Recent Comments:\n"
-                    for comment in details['comments'][-3:]:  # Last 3 comments
-                        comment_body = comment.get('body', '')[:500]  # Limit length
-                        ticket_content += f"- {comment_body}\n\n"
+                # Include ALL comments (not just last 3)
+                if details.get('comments') and len(details['comments']) > 0:
+                    ticket_content += f"\n--- TICKET COMMENTS ({len(details['comments'])} total) ---\n"
+                    for idx, comment in enumerate(details['comments'], 1):
+                        comment_body = comment.get('body', '').strip()
+                        if comment_body:
+                            ticket_content += f"\nComment #{idx}:\n{comment_body}\n"
+                            ticket_content += "-" * 40 + "\n"
+
+                ticket_content += "\n=== END OF TICKET ===\n"
             else:
                 ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
 

@@ -1154,8 +1154,47 @@ def generate_related_resources_improved(query):
     # Fetch content from top results
     resources_with_content = []
 
-    # Prioritize help docs and API docs for content fetching
-    priority_resources = help_docs[:2] + api_docs[:2] + confluence_docs[:1] # Include 1 top confluence doc
+    # PRIORITY 1: If we have Zendesk tickets with full details (specific ticket lookup), add them FIRST
+    zendesk_tickets_with_details = [t for t in support_tickets if 'details' in t]
+    if zendesk_tickets_with_details:
+        logger.info(f"⚡ PRIORITY: Found {len(zendesk_tickets_with_details)} Zendesk tickets with full details - adding first")
+        for ticket in zendesk_tickets_with_details:
+            details = ticket['details']
+            ticket_content = f"=== ZENDESK SUPPORT TICKET ===\n"
+            ticket_content += f"Ticket ID: #{details['id']}\n"
+            ticket_content += f"Subject: {details['subject']}\n"
+            ticket_content += f"Status: {details['status']}\n"
+            ticket_content += f"Priority: {details.get('priority', 'N/A')}\n"
+            ticket_content += f"Created: {details['created_at']}\n"
+            ticket_content += f"Updated: {details['updated_at']}\n"
+            ticket_content += f"\n--- ORIGINAL DESCRIPTION ---\n"
+            ticket_content += f"{details.get('description', 'No description')}\n"
+
+            # Include ALL comments
+            if details.get('comments') and len(details['comments']) > 0:
+                ticket_content += f"\n--- TICKET COMMENTS ({len(details['comments'])} total) ---\n"
+                for idx, comment in enumerate(details['comments'], 1):
+                    comment_body = comment.get('body', '').strip()
+                    if comment_body:
+                        ticket_content += f"\nComment #{idx}:\n{comment_body}\n"
+                        ticket_content += "-" * 40 + "\n"
+
+            ticket_content += "\n=== END OF TICKET ===\n"
+
+            resources_with_content.append({
+                'title': ticket['title'],
+                'url': ticket['url'],
+                'content': ticket_content,
+                'source': 'zendesk'
+            })
+            logger.info(f"✅ Added Zendesk ticket with full details: {ticket['title']}")
+
+    # PRIORITY 2: Help docs and API docs for content fetching (only if not specific ticket lookup)
+    if not zendesk_tickets_with_details:
+        priority_resources = help_docs[:2] + api_docs[:2] + confluence_docs[:1]
+    else:
+        # If we have specific ticket, reduce other resources
+        priority_resources = help_docs[:1] + api_docs[:1]
 
     # Use the improved content fetching function
     for doc in priority_resources:
@@ -1170,7 +1209,7 @@ def generate_related_resources_improved(query):
                 })
                 logger.info(f"✅ Fetched content: {doc['title'][:60]}... ({len(content)} chars)")
 
-    # Add JIRA and Zendesk details without full fetch
+    # Add JIRA tickets
     for ticket in jira_tickets[:2]:
         if ticket.get('url'):
             ticket_content = f"JIRA Ticket: {ticket['title']}\nThis engineering ticket may contain platform navigation steps or UI element references."
@@ -1181,34 +1220,11 @@ def generate_related_resources_improved(query):
                 'source': 'jira'
             })
 
-    for ticket in support_tickets[:2]:
+    # Add remaining Zendesk tickets (without full details - just search results)
+    remaining_zendesk = [t for t in support_tickets if 'details' not in t]
+    for ticket in remaining_zendesk[:2]:
         if ticket.get('url'):
-            # Check if we have full ticket details
-            if 'details' in ticket:
-                details = ticket['details']
-                ticket_content = f"=== ZENDESK SUPPORT TICKET ===\n"
-                ticket_content += f"Ticket ID: #{details['id']}\n"
-                ticket_content += f"Subject: {details['subject']}\n"
-                ticket_content += f"Status: {details['status']}\n"
-                ticket_content += f"Priority: {details.get('priority', 'N/A')}\n"
-                ticket_content += f"Created: {details['created_at']}\n"
-                ticket_content += f"Updated: {details['updated_at']}\n"
-                ticket_content += f"\n--- ORIGINAL DESCRIPTION ---\n"
-                ticket_content += f"{details.get('description', 'No description')}\n"
-
-                # Include ALL comments (not just last 3)
-                if details.get('comments') and len(details['comments']) > 0:
-                    ticket_content += f"\n--- TICKET COMMENTS ({len(details['comments'])} total) ---\n"
-                    for idx, comment in enumerate(details['comments'], 1):
-                        comment_body = comment.get('body', '').strip()
-                        if comment_body:
-                            ticket_content += f"\nComment #{idx}:\n{comment_body}\n"
-                            ticket_content += "-" * 40 + "\n"
-
-                ticket_content += "\n=== END OF TICKET ===\n"
-            else:
-                ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
-
+            ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
             resources_with_content.append({
                 'title': ticket['title'],
                 'url': ticket['url'],

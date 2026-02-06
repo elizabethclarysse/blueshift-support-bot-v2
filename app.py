@@ -714,14 +714,87 @@ def search_confluence_docs_improved(query, limit=5, space_key=None, debug=True):
 
 
 # --- FIX 3: Simplified search_zendesk_tickets (Kept same) ---
+def get_zendesk_ticket_details(ticket_id):
+    """Fetch full details of a specific Zendesk ticket by ID"""
+    if not API_STATUS.get('zendesk', False):
+        logger.warning("Zendesk API not available")
+        return None
+
+    try:
+        auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
+        headers = {
+            'Authorization': f'Basic {auth}',
+            'Accept': 'application/json'
+        }
+
+        # Fetch ticket details
+        ticket_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.get(ticket_url, headers=headers, timeout=20)
+
+        if response.status_code == 200:
+            ticket_data = response.json().get('ticket', {})
+
+            # Fetch comments
+            comments_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/comments.json"
+            comments_response = requests.get(comments_url, headers=headers, timeout=20)
+            comments = []
+            if comments_response.status_code == 200:
+                comments = comments_response.json().get('comments', [])
+
+            return {
+                'id': ticket_data.get('id'),
+                'subject': ticket_data.get('subject'),
+                'description': ticket_data.get('description'),
+                'status': ticket_data.get('status'),
+                'priority': ticket_data.get('priority'),
+                'created_at': ticket_data.get('created_at'),
+                'updated_at': ticket_data.get('updated_at'),
+                'comments': comments,
+                'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket_id}"
+            }
+        else:
+            logger.error(f"Failed to fetch ticket {ticket_id}: {response.status_code}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Exception fetching ticket {ticket_id}: {e}")
+        return None
+
 def search_zendesk_tickets_improved(query, limit=5):
-    """Simplified Zendesk search, using API_STATUS"""
+    """Simplified Zendesk search, using API_STATUS. Also checks for specific ticket ID requests."""
     if not API_STATUS.get('zendesk', False):
         logger.warning("Zendesk API not available - skipping search")
         return []
 
     try:
-        # Assuming token auth is used via ZENDESK_EMAIL/token
+        # Check if query contains a Zendesk URL or specific ticket ID
+        # Match patterns like:
+        # - https://blueshiftsuccess.zendesk.com/agent/tickets/12345
+        # - zendesk.com/agent/tickets/12345
+        # - ticket #12345
+        # - ticket 12345
+        # - #12345
+        ticket_url_match = re.search(r'zendesk\.com/agent/tickets/(\d+)', query, re.IGNORECASE)
+        ticket_id_match = re.search(r'(?:ticket\s*#?|#)(\d{5,})', query, re.IGNORECASE)
+
+        ticket_id = None
+        if ticket_url_match:
+            ticket_id = ticket_url_match.group(1)
+            logger.info(f"Detected Zendesk URL with ticket ID: {ticket_id}")
+        elif ticket_id_match:
+            ticket_id = ticket_id_match.group(1)
+            logger.info(f"Detected ticket ID request: {ticket_id}")
+
+        if ticket_id:
+            ticket_details = get_zendesk_ticket_details(ticket_id)
+            if ticket_details:
+                return [{
+                    'title': f"Ticket #{ticket_details['id']}: {ticket_details['subject']}",
+                    'url': ticket_details['url'],
+                    'details': ticket_details
+                }]
+
+        # Otherwise, perform regular search
         auth = base64.b64encode(f"{ZENDESK_EMAIL}/token:{ZENDESK_TOKEN}".encode()).decode()
         headers = {
             'Authorization': f'Basic {auth}',
@@ -741,22 +814,22 @@ def search_zendesk_tickets_improved(query, limit=5):
         if response.status_code == 200:
             data = response.json()
             results = []
-            
+
             for ticket in data.get('results', []):
                 subject = ticket.get('subject', 'No Subject')
                 ticket_id = ticket.get('id')
-                
+
                 results.append({
                     'title': f"Ticket #{ticket_id}: {subject}",
                     'url': f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/agent/tickets/{ticket_id}"
                 })
-            
+
             logger.info(f"Zendesk search returned {len(results)} results for '{query}'")
             return results
         else:
             logger.error(f"ZENDESK search failed: {response.status_code} - {response.text[:200]}")
             return []
-            
+
     except Exception as e:
         logger.error(f"Zendesk search exception: {e}")
         return []
@@ -1099,7 +1172,24 @@ def generate_related_resources_improved(query):
 
     for ticket in support_tickets[:2]:
         if ticket.get('url'):
-            ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
+            # Check if we have full ticket details
+            if 'details' in ticket:
+                details = ticket['details']
+                ticket_content = f"Support Ticket #{details['id']}: {details['subject']}\n\n"
+                ticket_content += f"Status: {details['status']}\n"
+                ticket_content += f"Priority: {details.get('priority', 'N/A')}\n"
+                ticket_content += f"Created: {details['created_at']}\n\n"
+                ticket_content += f"Description:\n{details.get('description', 'No description')}\n\n"
+
+                # Include recent comments
+                if details.get('comments'):
+                    ticket_content += "Recent Comments:\n"
+                    for comment in details['comments'][-3:]:  # Last 3 comments
+                        comment_body = comment.get('body', '')[:500]  # Limit length
+                        ticket_content += f"- {comment_body}\n\n"
+            else:
+                ticket_content = f"Support Ticket: {ticket['title']}\nThis support ticket may contain step-by-step platform navigation instructions provided by agents."
+
             resources_with_content.append({
                 'title': ticket['title'],
                 'url': ticket['url'],

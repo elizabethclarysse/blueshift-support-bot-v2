@@ -21,10 +21,17 @@ except ImportError:
     pass  # dotenv not installed, continue without it
 
 app = Flask(__name__)
-app.secret_key = 'blueshift_support_bot_secret_key_2023'
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(32).hex())
 app.permanent_session_lifetime = timedelta(hours=12)
 
-# --- GEMINI API CONFIGURATION ---
+# --- Authentication Configuration ---
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'Admin')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+SUPPORT_USERNAME = os.environ.get('SUPPORT_USERNAME', 'Blueshift Support')
+SUPPORT_PASSWORD = os.environ.get('SUPPORT_PASSWORD')
+# ---------------------------------
+
+# --- CLAUDE API CONFIGURATION ---
 AI_API_KEY = os.environ.get('CLAUDE_API_KEY')
 # Claude API configuration
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
@@ -1929,14 +1936,14 @@ def login():
         password = data.get('password', '')
 
         # Check credentials - Admin login
-        if username == 'Admin' and password == 'BlueShiftAdmin#2025!':
+        if username == ADMIN_USERNAME and password and password == ADMIN_PASSWORD:
             session['logged_in'] = True
             session['is_admin'] = True
             session['agent_identified'] = False  # Flag to show identification prompt
             session.permanent = True
             return jsonify({'success': True})
         # Regular support agent login
-        elif username == 'Blueshift Support' and password == 'BlueS&n@*9072!':
+        elif username == SUPPORT_USERNAME and password and password == SUPPORT_PASSWORD:
             session['logged_in'] = True
             session['is_admin'] = False
             session['agent_identified'] = False  # Flag to show identification prompt
